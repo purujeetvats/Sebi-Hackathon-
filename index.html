@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NiveshOS — Every asset. One brain.</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <aside id="sidebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false">
+        <path d="M16 10 L7 21 M16 10 L25 21 M7 23 L25 23" stroke="var(--hairline)" stroke-width="1.5" fill="none"/>
+        <circle cx="16" cy="7" r="3.2" fill="var(--accent)"/>
+        <circle cx="7" cy="23" r="3.2" fill="var(--s2)"/>
+        <circle cx="25" cy="23" r="3.2" fill="var(--s5)"/>
+        <circle cx="16" cy="16" r="3.6" fill="var(--ink)"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">NiveshOS</span>
+        <span class="brand-tagline">Every asset. One brain.</span>
+      </div>
+    </div>
+
+    <nav class="nav" aria-label="Main navigation">
+      <button class="nav-btn active" type="button" data-panel="dashboard" aria-current="page">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>
+        <span class="nav-label">Dashboard</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="analytics">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M4 20V11"/><path d="M12 20V4"/><path d="M20 20v-7"/></svg>
+        <span class="nav-label">Analytics</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="learn">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M4 5.5C4 4.7 4.7 4 5.5 4H11.5a2 2 0 0 1 2 2v14.2a1.6 1.6 0 0 0-1.6-1.6H4z"/><path d="M20.4 5.5c0-.8-.7-1.5-1.5-1.5H12.9a2 2 0 0 0-2 2v14.2a1.6 1.6 0 0 1 1.6-1.6h7.9z"/></svg>
+        <span class="nav-label">Learn</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="profile">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="4.4"/><circle cx="12" cy="12" r="0.9" fill="currentColor"/></svg>
+        <span class="nav-label">Profile</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="invest">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 6.2h5.8V12"/></svg>
+        <span class="nav-label">Invest</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="copilot">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M21 11.4a8.3 8.3 0 0 1-8.3 8.3 8.2 8.2 0 0 1-3.7-.87L3 21l1.9-5.6a8.2 8.2 0 0 1-.87-3.7A8.3 8.3 0 0 1 12.4 3h.3a8.3 8.3 0 0 1 8.3 8.1z"/></svg>
+        <span class="nav-label">Copilot</span>
+      </button>
+      <button class="nav-btn" type="button" data-panel="trust">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M12 3.2l7.2 2.9v6.1c0 4.6-3.1 8.3-7.2 9.3-4.1-1-7.2-4.7-7.2-9.3V6.1z"/><path d="M8.7 12.2l2.2 2.2 4.4-4.4"/></svg>
+        <span class="nav-label">Trust</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.4 4.4l1.7 1.7M17.9 17.9l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.4 19.6l1.7-1.7M17.9 6.1l1.7-1.7"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M20.8 14.5A9 9 0 1 1 9.9 3.2a7.2 7.2 0 0 0 10.9 11.3z"/></svg>
+      </button>
+      <div id="investor-chip" class="investor-chip">
+        <div class="avatar" id="investor-avatar" aria-hidden="true">PS</div>
+        <div class="investor-info">
+          <span class="investor-name" id="investor-name">Priya Sharma</span>
+          <span class="investor-pan" id="investor-pan">ABCPS****K</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <main id="main">
+
+    <section class="panel active" id="panel-dashboard" aria-label="Dashboard">
+      <header class="panel-header">
+        <h1>Dashboard</h1>
+        <p class="panel-sub">Every account, every asset class, one intelligent view.</p>
+      </header>
+      <div class="panel-body">
+        <div id="kpi-row" class="kpi-row"></div>
+        <div class="grid-2">
+          <div id="alloc-donut" class="card data-container"></div>
+          <div id="value-line" class="card data-container"></div>
+        </div>
+        <div id="accounts-strip" class="accounts-strip data-container"></div>
+        <div id="holdings-table" class="card data-container"></div>
+        <div id="alerts-feed" class="card data-container"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-analytics" aria-label="Analytics">
+      <header class="panel-header">
+        <h1>Risk &amp; Exposure Analytics</h1>
+        <p class="panel-sub">Where your money is concentrated, and what it costs you.</p>
+      </header>
+      <div class="panel-body">
+        <div id="sector-bars" class="card data-container"></div>
+        <div class="grid-2">
+          <div id="concentration-card" class="card data-container"></div>
+          <div id="overlap-card" class="card data-container"></div>
+        </div>
+        <div class="grid-2">
+          <div id="risk-score-card" class="card data-container"></div>
+          <div id="asset-mix-card" class="card data-container"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-learn" aria-label="Learn">
+      <header class="panel-header">
+        <h1>Learn</h1>
+        <p class="panel-sub">Understand an instrument before you own it.</p>
+      </header>
+      <div class="panel-body">
+        <div id="lesson-grid" class="lesson-grid data-container"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-profile" aria-label="Risk Profile">
+      <header class="panel-header">
+        <h1>Risk Profile</h1>
+        <p class="panel-sub">Six questions decide what you're ready to invest in.</p>
+      </header>
+      <div class="panel-body">
+        <div id="risk-quiz" class="card data-container"></div>
+        <div id="risk-result" class="card data-container"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-invest" aria-label="Invest">
+      <header class="panel-header">
+        <h1>Invest</h1>
+        <p class="panel-sub">REITs, InvITs, bonds and more — verified against the SEBI registry.</p>
+      </header>
+      <div class="panel-body">
+        <div id="suitability-banner" class="card data-container"></div>
+        <div id="product-grid" class="product-grid data-container"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-copilot" aria-label="AI Copilot">
+      <header class="panel-header">
+        <h1>AI Copilot</h1>
+        <p class="panel-sub">Ask about your portfolio, in plain language.</p>
+      </header>
+      <div class="panel-body">
+        <div class="chat-shell card">
+          <div id="chat-log" class="chat-log data-container" role="log" aria-live="polite"></div>
+          <div id="chat-suggestions" class="chat-suggestions data-container"></div>
+          <form id="chat-form" class="chat-form" autocomplete="off">
+            <input id="chat-input" class="chat-input" type="text" name="message" placeholder="Ask about your portfolio…" aria-label="Message the copilot">
+            <button type="submit" class="btn btn-primary chat-send" aria-label="Send message">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M4 12l16-8-6 8 6 8z"/></svg>
+            </button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-trust" aria-label="Trust and Compliance">
+      <header class="panel-header">
+        <h1>Trust &amp; Compliance</h1>
+        <p class="panel-sub">Every check, every consent, every order — logged.</p>
+      </header>
+      <div class="panel-body">
+        <div id="registry-card" class="card data-container"></div>
+        <div id="consent-ledger" class="card data-container"></div>
+        <div id="audit-trail" class="card data-container"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="chart-tooltip" hidden></div>
+<div id="modal-root" hidden></div>
+<div id="toast-root" aria-live="polite"></div>
+
+<div id="onboarding" class="onboarding-overlay">
+  <div class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="onboarding-progress" aria-hidden="true">
+      <span class="onboarding-dot active" data-dot="1"></span>
+      <span class="onboarding-dot" data-dot="2"></span>
+      <span class="onboarding-dot" data-dot="3"></span>
+    </div>
+
+    <section class="onboarding-step active" data-step="1">
+      <svg class="onboarding-mark" viewBox="0 0 32 32" width="48" height="48" aria-hidden="true" focusable="false">
+        <path d="M16 10 L7 21 M16 10 L25 21 M7 23 L25 23" stroke="var(--hairline)" stroke-width="1.5" fill="none"/>
+        <circle cx="16" cy="7" r="3.2" fill="var(--accent)"/>
+        <circle cx="7" cy="23" r="3.2" fill="var(--s2)"/>
+        <circle cx="25" cy="23" r="3.2" fill="var(--s5)"/>
+        <circle cx="16" cy="16" r="3.6" fill="var(--ink)"/>
+      </svg>
+      <h2 id="onboarding-title">Welcome to NiveshOS</h2>
+      <p class="onboarding-copy">Every demat account, mutual fund folio, bond and idle rupee — pulled into one intelligent view. Understand what you hold, discover what you're missing, and invest across asset classes without leaving this screen.</p>
+      <ul class="onboarding-points">
+        <li>Consolidated portfolio across brokers &amp; depositories</li>
+        <li>Plain-language education before every purchase</li>
+        <li>Only SEBI-registry verified products, always</li>
+      </ul>
+      <div class="onboarding-actions">
+        <a href="#" class="link-skip" id="onboarding-skip">Use demo data instead</a>
+        <button type="button" class="btn btn-primary" id="onboarding-next-1">Get started</button>
+      </div>
+    </section>
+
+    <section class="onboarding-step" data-step="2">
+      <h2>Connect your accounts</h2>
+      <p class="onboarding-copy">NiveshOS uses the Account Aggregator framework to pull read-only data. Nothing moves without your say-so.</p>
+      <div class="consent-list">
+        <label class="consent-item">
+          <input type="checkbox" id="consent-nsdl" class="consent-checkbox" data-scope="NSDL Demat holdings">
+          <span class="consent-item-text"><strong>NSDL demat holdings</strong><small>Equity &amp; ETF positions held with NSDL-linked brokers.</small></span>
+        </label>
+        <label class="consent-item">
+          <input type="checkbox" id="consent-cdsl" class="consent-checkbox" data-scope="CDSL Demat holdings">
+          <span class="consent-item-text"><strong>CDSL demat holdings</strong><small>Equity positions held with CDSL-linked brokers.</small></span>
+        </label>
+        <label class="consent-item">
+          <input type="checkbox" id="consent-mf" class="consent-checkbox" data-scope="Mutual fund folios">
+          <span class="consent-item-text"><strong>Mutual fund folios</strong><small>Via CAMS / KFintech registrar records.</small></span>
+        </label>
+        <label class="consent-item">
+          <input type="checkbox" id="consent-bank" class="consent-checkbox" data-scope="Bank balance">
+          <span class="consent-item-text"><strong>Bank balance</strong><small>Idle cash available across linked accounts.</small></span>
+        </label>
+      </div>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-ghost" id="onboarding-back-2">Back</button>
+        <button type="button" class="btn btn-primary" id="grant-consent-btn">Grant consent</button>
+      </div>
+    </section>
+
+    <section class="onboarding-step" data-step="3">
+      <h2>Fetching your data</h2>
+      <p class="onboarding-copy">Pulling from your connected sources…</p>
+      <div class="fetch-rows">
+        <div class="fetch-row" id="fetch-nsdl"><span>NSDL Depository</span><span class="fetch-status">Pending</span></div>
+        <div class="fetch-row" id="fetch-cdsl"><span>CDSL Depository</span><span class="fetch-status">Pending</span></div>
+        <div class="fetch-row" id="fetch-mf"><span>CAMS / KFintech</span><span class="fetch-status">Pending</span></div>
+        <div class="fetch-row" id="fetch-bank"><span>Bank Balance</span><span class="fetch-status">Pending</span></div>
+      </div>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-primary" id="onboarding-done" disabled>Enter NiveshOS</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/ScrollTrigger.min.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+<script src="anim.js"></script>
+</body>
+</html>

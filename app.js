@@ -1,0 +1,1094 @@
+/* ==========================================================================
+   NiveshOS — app.js  (Agent A / logic)
+   Vanilla browser script (no modules, no framework, runs from file://).
+   Owns: localStorage state, panel router, onboarding, all panel renderers,
+   inline-SVG charts, suitability engine, simulated order routing, rule-based
+   copilot, audit/consent trails. Queries the DOM by the BUILD_SPEC contract
+   IDs; every lookup is null-safe so a missing container never crashes.
+   Exposes window.NIVESH = { switchPanel, state, fmt }.
+   ========================================================================== */
+(function () {
+  "use strict";
+
+  var D = window.NIVESH_DATA || {};
+  var TODAY = "2026-07-06";
+
+  /* -------------------------------------------------------------- helpers */
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  var _inr = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
+  function fmt(n) { return "₹" + _inr.format(Math.round(n || 0)); }
+  function fmtSigned(n) { return (n >= 0 ? "+" : "−") + "₹" + _inr.format(Math.abs(Math.round(n || 0))); }
+  function pct(n, d) { d = d == null ? 1 : d; return (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(d) + "%"; }
+  function cls_dir(n) { return n > 0 ? "positive" : n < 0 ? "negative" : "neutral"; }
+  function dirColor(n) { return n > 0 ? "var(--good)" : n < 0 ? "var(--critical)" : "var(--ink-muted)"; }
+  var SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+  function sv(i) { return "var(" + SERIES[i % SERIES.length] + ")"; }
+
+  /* ------------------------------------------------------------- state */
+  var LS = "niveshos.";
+  var state = {
+    onboarded: false,
+    theme: "dark",
+    riskProfile: null,          // 'conservative' | 'balanced' | 'aggressive'
+    riskScore: null,
+    completedLessons: [],
+    purchases: [],              // holding-shaped objects appended by order flow
+    consents: [],
+    auditTrail: []
+  };
+  var _rendered = false;
+
+  function loadState() {
+    try {
+      Object.keys(state).forEach(function (k) {
+        var raw = localStorage.getItem(LS + k);
+        if (raw != null) state[k] = JSON.parse(raw);
+      });
+    } catch (e) { /* file:// private mode etc. — fall back to defaults */ }
+  }
+  function save(k) {
+    try { localStorage.setItem(LS + k, JSON.stringify(state[k])); }
+    catch (e) { /* ignore persistence failure */ }
+  }
+  function saveAll() { Object.keys(state).forEach(save); }
+
+  /* ------------------------------------------------------- audit + consent */
+  function audit(kind, text) {
+    state.auditTrail.push({ ts: nowStamp(), kind: kind, text: text });
+    save("auditTrail");
+    if (isActive("trust")) renderTrust();
+  }
+  function nowStamp() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return TODAY.slice(0, 4) + "-" + TODAY.slice(5) + " " +
+      p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  /* ---------------------------------------------------- derived portfolio */
+  function baseHoldings() { return (D.holdings || []).slice(); }
+  function allHoldings() { return baseHoldings().concat(state.purchases); }
+  function hv(h) { return (h.qty || 0) * (h.ltp || 0); }
+  function marketHoldings() { return allHoldings().filter(function (h) { return h.assetClass !== "cash"; }); }
+  function netWorth() { return allHoldings().reduce(function (s, h) { return s + hv(h); }, 0); }
+  function idleCash() { return allHoldings().filter(function (h) { return h.assetClass === "cash"; }).reduce(function (s, h) { return s + hv(h); }, 0); }
+  function marketValue() { return marketHoldings().reduce(function (s, h) { return s + hv(h); }, 0); }
+  function invested() { return marketHoldings().reduce(function (s, h) { return s + (h.qty || 0) * (h.avgPrice || 0); }, 0); }
+  function dayPnL() {
+    var r = marketHoldings().reduce(function (s, h) { return s + hv(h) * (h.dayChangePct || 0) / 100; }, 0);
+    var base = marketValue() - r;
+    return { rupees: r, pct: base ? (r / base) * 100 : 0 };
+  }
+  function thirtyDay() {
+    var hs = D.history || [];
+    if (hs.length < 2) return { pct: 0, from: 0, to: netWorth() };
+    var a = hs[0].v, b = hs[hs.length - 1].v;
+    return { pct: (b - a) / a * 100, from: a, to: b };
+  }
+
+  var ASSET_ORDER = [
+    { key: "equity", label: "Equity" },
+    { key: "mf", label: "Mutual Funds" },
+    { key: "bond", label: "Bonds" },
+    { key: "etf", label: "Gold ETF" },
+    { key: "cash", label: "Cash" }
+  ];
+  function assetAlloc() {
+    var total = netWorth();
+    return ASSET_ORDER.map(function (a, i) {
+      var val = allHoldings().filter(function (h) { return h.assetClass === a.key; })
+        .reduce(function (s, h) { return s + hv(h); }, 0);
+      return { key: a.key, label: a.label, value: val, pct: total ? val / total * 100 : 0, color: sv(i) };
+    }).filter(function (a) { return a.value > 0; });
+  }
+  function sectorExposure() {
+    // over market value (excludes cash) — this is the concentration denominator
+    var mv = marketValue(), map = {};
+    marketHoldings().forEach(function (h) {
+      var s = h.sector || "Other";
+      map[s] = (map[s] || 0) + hv(h);
+    });
+    return Object.keys(map).map(function (s) {
+      return { sector: s, value: map[s], pct: mv ? map[s] / mv * 100 : 0 };
+    }).sort(function (a, b) { return b.value - a.value; });
+  }
+  function financialsPct() {
+    var s = sectorExposure().filter(function (x) { return x.sector === "Financials"; })[0];
+    return s ? s.pct : 0;
+  }
+  function topIssuer() {
+    // largest single issuer (by symbol) as % of market value
+    var mv = marketValue(), map = {};
+    marketHoldings().forEach(function (h) {
+      map[h.symbol] = { name: h.name, v: (map[h.symbol] ? map[h.symbol].v : 0) + hv(h) };
+    });
+    var best = null;
+    Object.keys(map).forEach(function (k) {
+      if (!best || map[k].v > best.v) best = { name: map[k].name, v: map[k].v };
+    });
+    return best ? { name: best.name, pct: mv ? best.v / mv * 100 : 0 } : { name: "—", pct: 0 };
+  }
+  function mfOverlap() {
+    var mfs = allHoldings().filter(function (h) { return h.assetClass === "mf" && h.underlying; });
+    if (mfs.length < 2) return null;
+    var a = mfs[0], b = mfs[1];
+    var setB = {}; b.underlying.forEach(function (u) { setB[u.symbol] = u; });
+    var common = a.underlying.filter(function (u) { return setB[u.symbol]; })
+      .map(function (u) { return { symbol: u.symbol, name: u.name }; });
+    var overlapPct = Math.round(common.length / a.underlying.length * 100);
+    return { a: a, b: b, common: common, pct: overlapPct };
+  }
+  function riskiestHolding() {
+    // largest single-day adverse move among market holdings
+    var arr = marketHoldings().slice().sort(function (x, y) { return (x.dayChangePct || 0) - (y.dayChangePct || 0); });
+    return arr[0];
+  }
+  function mergedHoldings() {
+    // merge same symbol across accounts (dupe-merge). cash excluded from table.
+    var groups = {};
+    marketHoldings().forEach(function (h) {
+      var g = groups[h.symbol];
+      if (!g) {
+        groups[h.symbol] = {
+          symbol: h.symbol, name: h.name, assetClass: h.assetClass, sector: h.sector,
+          qty: h.qty, ltp: h.ltp, dayChangePct: h.dayChangePct,
+          value: hv(h), accounts: [h.accountId]
+        };
+      } else {
+        g.qty += h.qty; g.value += hv(h);
+        if (g.accounts.indexOf(h.accountId) < 0) g.accounts.push(h.accountId);
+      }
+    });
+    return Object.keys(groups).map(function (k) { return groups[k]; })
+      .sort(function (a, b) { return b.value - a.value; });
+  }
+  function accountName(id) {
+    var a = (D.accounts || []).filter(function (x) { return x.id === id; })[0];
+    return a ? a.broker : id;
+  }
+
+  var TYPE_LABEL = { equity: "Equity", mf: "Mutual Fund", bond: "Bond", reit: "REIT", invit: "InvIT", etf: "ETF", cash: "Cash" };
+
+  /* ============================================================ CHARTS */
+  var tooltip = null;
+  function getTip() { if (!tooltip) tooltip = $("chart-tooltip"); return tooltip; }
+  function showTip(html, e) {
+    var t = getTip(); if (!t) return;
+    t.hidden = false; t.innerHTML = html;
+    t.style.position = "fixed";
+    t.style.left = (e.clientX + 14) + "px";
+    t.style.top = (e.clientY + 14) + "px";
+    t.style.pointerEvents = "none";
+    t.style.zIndex = "9999";
+  }
+  function hideTip() { var t = getTip(); if (t) t.hidden = true; }
+  function wireTips(container) {
+    if (!container) return;
+    var marks = container.querySelectorAll("[data-tip]");
+    Array.prototype.forEach.call(marks, function (m) {
+      m.style.cursor = "pointer";
+      m.addEventListener("mousemove", function (e) { showTip(m.getAttribute("data-tip"), e); });
+      m.addEventListener("mouseleave", hideTip);
+    });
+  }
+
+  // --- donut (asset-class allocation) + legend
+  function renderDonut(container) {
+    if (!container) return;
+    var data = assetAlloc(), total = netWorth();
+    var size = 220, cx = size / 2, cy = size / 2, r = 82, sw = 22;
+    var C = 2 * Math.PI * r, gap = 2, off = 0;
+    var segs = "";
+    data.forEach(function (d, i) {
+      var len = d.pct / 100 * C;
+      var dash = Math.max(len - gap, 0.5);
+      segs += '<circle class="anim-donut" data-tip="<b>' + esc(d.label) + '</b><br>' + fmt(d.value) + " &middot; " + d.pct.toFixed(1) +
+        '%" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + d.color +
+        '" stroke-width="' + sw + '" stroke-dasharray="' + dash.toFixed(2) + " " + (C - dash).toFixed(2) +
+        '" stroke-dashoffset="' + (-off).toFixed(2) + '"></circle>';
+      off += len;
+    });
+    var svg = '<svg viewBox="0 0 ' + size + " " + size + '" width="' + size + '" height="' + size + '" role="img" aria-label="Asset allocation">' +
+      '<g transform="rotate(-90 ' + cx + " " + cy + ')">' + segs + "</g>" +
+      '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" fill="var(--ink-muted)" font-size="11">Net Worth</text>' +
+      '<text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" fill="var(--ink)" font-size="17" font-weight="700">' + fmt(total) + "</text></svg>";
+    var legend = '<ul class="chart-legend" style="list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 16px;">';
+    data.forEach(function (d) {
+      legend += '<li style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);">' +
+        '<span style="width:10px;height:10px;border-radius:2px;background:' + d.color + ';display:inline-block;"></span>' +
+        esc(d.label) + ' <span style="color:var(--ink-muted);">' + d.pct.toFixed(1) + "%</span></li>";
+    });
+    legend += "</ul>";
+    container.innerHTML = '<div class="donut-wrap" style="display:flex;flex-direction:column;align-items:center;">' + svg + legend + "</div>";
+    wireTips(container);
+  }
+
+  // --- 30-day line chart with crosshair + tooltip
+  function renderLine(container) {
+    if (!container) return;
+    var hs = D.history || [];
+    if (!hs.length) { container.innerHTML = ""; return; }
+    var W = 640, H = 220, pL = 8, pR = 8, pT = 14, pB = 22;
+    var iw = W - pL - pR, ih = H - pT - pB;
+    var vals = hs.map(function (d) { return d.v; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var pad = (max - min) * 0.12 || 1; min -= pad; max += pad;
+    function X(i) { return pL + (i / (hs.length - 1)) * iw; }
+    function Y(v) { return pT + (1 - (v - min) / (max - min)) * ih; }
+    var pts = hs.map(function (d, i) { return X(i) + "," + Y(d.v).toFixed(1); });
+    var linePath = "M" + pts.join(" L");
+    var areaPath = "M" + X(0) + "," + (pT + ih) + " L" + pts.join(" L") + " L" + X(hs.length - 1) + "," + (pT + ih) + " Z";
+    var up = vals[vals.length - 1] >= vals[0];
+    var col = up ? "var(--good)" : "var(--critical)";
+    var grid = "";
+    for (var g = 0; g <= 3; g++) {
+      var gy = pT + (g / 3) * ih;
+      grid += '<line x1="' + pL + '" y1="' + gy + '" x2="' + (W - pR) + '" y2="' + gy + '" stroke="var(--grid)" stroke-width="1"></line>';
+    }
+    var svg = '<svg id="line-svg" viewBox="0 0 ' + W + " " + H + '" width="100%" preserveAspectRatio="none" role="img" aria-label="30-day portfolio value">' +
+      grid +
+      '<path d="' + areaPath + '" fill="' + col + '" opacity="0.08"></path>' +
+      '<path class="anim-line" d="' + linePath + '" fill="none" stroke="' + col + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>' +
+      '<line id="line-cross" x1="0" y1="' + pT + '" x2="0" y2="' + (pT + ih) + '" stroke="var(--ink-muted)" stroke-width="1" stroke-dasharray="3 3" style="display:none;"></line>' +
+      '<circle id="line-dot" r="3.5" fill="' + col + '" style="display:none;"></circle>' +
+      '<rect id="line-hit" x="' + pL + '" y="' + pT + '" width="' + iw + '" height="' + ih + '" fill="transparent"></rect></svg>';
+    var range = '<div class="chart-note" style="display:flex;justify-content:space-between;font-size:11px;color:var(--ink-muted);margin-top:4px;">' +
+      "<span>" + esc(hs[0].t) + "</span><span>30-day &middot; " + pct(thirtyDay().pct) + "</span><span>" + esc(hs[hs.length - 1].t) + "</span></div>";
+    container.innerHTML = svg + range;
+    // interaction
+    var hit = $("line-hit"), cross = $("line-cross"), dot = $("line-dot");
+    if (hit) {
+      hit.style.cursor = "crosshair";
+      hit.addEventListener("mousemove", function (e) {
+        var rect = hit.getBoundingClientRect();
+        var rel = (e.clientX - rect.left) / rect.width;
+        var idx = Math.round(rel * (hs.length - 1));
+        idx = Math.max(0, Math.min(hs.length - 1, idx));
+        var d = hs[idx], x = X(idx), y = Y(d.v);
+        if (cross) { cross.setAttribute("x1", x); cross.setAttribute("x2", x); cross.style.display = ""; }
+        if (dot) { dot.setAttribute("cx", x); dot.setAttribute("cy", y); dot.style.display = ""; }
+        showTip("<b>" + esc(d.t) + "</b><br>" + fmt(d.v), e);
+      });
+      hit.addEventListener("mouseleave", function () {
+        if (cross) cross.style.display = "none";
+        if (dot) dot.style.display = "none";
+        hideTip();
+      });
+    }
+  }
+
+  // --- horizontal sector bars
+  function renderSectorBars(container) {
+    if (!container) return;
+    var data = sectorExposure();
+    var max = data.length ? data[0].pct : 100;
+    var rowH = 30, barH = 20, W = 560, labelW = 150, trackX = labelW, trackW = W - labelW - 60;
+    var svg = '<svg viewBox="0 0 ' + W + " " + (data.length * rowH + 6) + '" width="100%" role="img" aria-label="Sector exposure">';
+    data.forEach(function (d, i) {
+      var y = i * rowH + 4;
+      var w = Math.max(2, d.pct / max * trackW);
+      svg += '<text x="0" y="' + (y + barH / 2 + 4) + '" fill="var(--ink-2)" font-size="12">' + esc(d.sector) + "</text>";
+      svg += '<rect x="' + trackX + '" y="' + y + '" width="' + trackW + '" height="' + barH + '" rx="4" fill="var(--grid)" opacity="0.5"></rect>';
+      svg += '<rect class="anim-bar" data-grow="x" data-tip="<b>' + esc(d.sector) + '</b><br>' + fmt(d.value) + " &middot; " + d.pct.toFixed(1) +
+        '%" x="' + trackX + '" y="' + y + '" width="' + w.toFixed(1) + '" height="' + barH + '" rx="4" fill="' + sv(i) + '"></rect>';
+      svg += '<text x="' + (trackX + w + 6) + '" y="' + (y + barH / 2 + 4) + '" fill="var(--ink)" font-size="12" font-weight="600">' + d.pct.toFixed(1) + "%</text>";
+    });
+    svg += "</svg>";
+    container.innerHTML = svg;
+    wireTips(container);
+  }
+
+  // --- risk gauge (0-100 semicircle)
+  function renderGauge(container, score, label) {
+    if (!container) return;
+    var W = 240, H = 140, cx = W / 2, cy = 120, r = 92;
+    var start = "M" + (cx - r) + "," + cy + " A" + r + "," + r + " 0 0 1 " + (cx + r) + "," + cy;
+    var col = score < 34 ? "var(--good)" : score < 67 ? "var(--warn)" : "var(--serious)";
+    var svg = '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" role="img" aria-label="Risk score">' +
+      '<path d="' + start + '" fill="none" stroke="var(--grid)" stroke-width="16" stroke-linecap="round"></path>' +
+      '<path d="' + start + '" fill="none" stroke="' + col + '" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="' + score + ' 100"></path>' +
+      '<text x="' + cx + '" y="' + (cy - 18) + '" text-anchor="middle" fill="var(--ink)" font-size="30" font-weight="700">' + Math.round(score) + "</text>" +
+      '<text x="' + cx + '" y="' + (cy + 2) + '" text-anchor="middle" fill="var(--ink-muted)" font-size="11">/ 100</text></svg>' +
+      '<div style="text-align:center;margin-top:2px;font-size:13px;color:var(--ink-2);">Risk appetite: <b style="color:var(--ink);">' + esc(label) + "</b></div>";
+    container.innerHTML = svg;
+  }
+
+  // --- mix vs suggested stacked bars
+  var SUGGESTED = {
+    conservative: { Equity: 25, "Mutual Funds": 15, Bonds: 40, "Gold ETF": 10, Cash: 10 },
+    balanced: { Equity: 40, "Mutual Funds": 20, Bonds: 25, "Gold ETF": 8, Cash: 7 },
+    aggressive: { Equity: 60, "Mutual Funds": 20, Bonds: 12, "Gold ETF": 5, Cash: 3 }
+  };
+  function renderMixBars(container) {
+    if (!container) return;
+    var tier = state.riskProfile || "balanced";
+    var yours = assetAlloc();
+    var sug = SUGGESTED[tier];
+    var W = 560, barH = 22;
+    function stacked(items, y) {
+      var x = 0, out = "";
+      items.forEach(function (it) {
+        var w = it.pct / 100 * W;
+        if (w <= 0) return;
+        var seg = Math.max(0, w - 2);
+        out += '<rect class="anim-bar" data-grow="x" data-tip="<b>' + esc(it.label) + '</b><br>' + it.pct.toFixed(1) +
+          '%" x="' + x.toFixed(1) + '" y="' + y + '" width="' + seg.toFixed(1) + '" height="' + barH + '" rx="3" fill="' + it.color + '"></rect>';
+        if (it.pct >= 9) out += '<text x="' + (x + seg / 2).toFixed(1) + '" y="' + (y + barH / 2 + 4) + '" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">' + Math.round(it.pct) + "%</text>";
+        x += w;
+      });
+      return out;
+    }
+    var yoursItems = yours;
+    var sugItems = ASSET_ORDER.map(function (a, i) { return { label: a.label, pct: sug[a.label] || 0, color: sv(i) }; });
+    var svg = '<svg viewBox="0 0 ' + W + ' 84" width="100%" role="img" aria-label="Your mix vs suggested">' +
+      '<text x="0" y="12" fill="var(--ink-muted)" font-size="11">Your mix</text>' +
+      stacked(yoursItems, 16) +
+      '<text x="0" y="60" fill="var(--ink-muted)" font-size="11">Suggested (' + esc(tier) + ")</text>" +
+      stacked(sugItems, 62) + "</svg>";
+    var legend = '<ul class="chart-legend" style="list-style:none;margin:6px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 14px;">';
+    ASSET_ORDER.forEach(function (a, i) {
+      legend += '<li style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-2);"><span style="width:9px;height:9px;border-radius:2px;background:' + sv(i) + ';display:inline-block;"></span>' + esc(a.label) + "</li>";
+    });
+    legend += "</ul>";
+    container.innerHTML = svg + legend;
+    wireTips(container);
+  }
+
+  /* ============================================================ PANELS */
+
+  function statTile(label, rawValue, displayText, prefix, deltaText, deltaDir) {
+    return '<div class="stat-tile">' +
+      '<div class="label">' + esc(label) + "</div>" +
+      '<div class="value countup" data-value="' + Math.round(Math.abs(rawValue)) + '" data-prefix="' + prefix + '" data-decimals="0" data-suffix="">' + displayText + "</div>" +
+      '<div class="delta ' + deltaDir + '">' + esc(deltaText) + "</div></div>";
+  }
+  function renderKPIs() {
+    var host = $("kpi-row"); if (!host) return;
+    var dp = dayPnL(), td = thirtyDay(), unreal = marketValue() - invested();
+    host.innerHTML =
+      statTile("Net Worth", netWorth(), fmt(netWorth()), "₹", pct(td.pct) + " (30d)", cls_dir(td.pct)) +
+      statTile("Day P&L", dp.rupees, fmtSigned(dp.rupees), (dp.rupees < 0 ? "−₹" : "+₹"), pct(dp.pct) + " today", cls_dir(dp.pct)) +
+      statTile("Total Invested", invested(), fmt(invested()), "₹", fmtSigned(unreal) + " unrealised", cls_dir(unreal)) +
+      statTile("Idle Cash", idleCash(), fmt(idleCash()), "₹", "earning ~0%", "neutral");
+  }
+
+  function renderAccountsStrip() {
+    var host = $("accounts-strip"); if (!host) return;
+    host.innerHTML = (D.accounts || []).map(function (a) {
+      var val = marketHoldings().filter(function (h) { return h.accountId === a.id; }).reduce(function (s, h) { return s + hv(h); }, 0);
+      val += allHoldings().filter(function (h) { return h.accountId === a.id && h.assetClass === "cash"; }).reduce(function (s, h) { return s + hv(h); }, 0);
+      return '<div class="account-card">' +
+        '<div class="acct-broker" style="font-weight:600;">' + esc(a.broker) + "</div>" +
+        '<div class="acct-meta" style="font-size:11px;color:var(--ink-muted);">' + esc(a.depository) + " &middot; " + esc(a.type) + "</div>" +
+        '<div class="acct-value" style="font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px;">' + fmt(val) + "</div>" +
+        '<div class="acct-sync" style="font-size:11px;color:var(--good);">● Synced ' + esc(a.lastSync) + "</div></div>";
+    }).join("");
+  }
+
+  function renderHoldingsTable() {
+    var host = $("holdings-table"); if (!host) return;
+    var rows = mergedHoldings();
+    var body = rows.map(function (r) {
+      var acct = r.accounts.length > 1
+        ? '<span title="' + esc(r.accounts.map(accountName).join(", ")) + '">' + esc(accountName(r.accounts[0])) + ' <span class="dupe-chip" style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:6px;padding:0 5px;font-size:10px;">+' + (r.accounts.length - 1) + " broker</span></span>"
+        : esc(accountName(r.accounts[0]));
+      return "<tr>" +
+        '<td><b>' + esc(r.symbol) + "</b><div style=\"font-size:11px;color:var(--ink-muted);\">" + esc(r.name) + "</div></td>" +
+        "<td>" + esc(TYPE_LABEL[r.assetClass] || r.assetClass) + "</td>" +
+        "<td>" + acct + "</td>" +
+        '<td style="text-align:right;font-variant-numeric:tabular-nums;">' + _inr.format(r.qty) + "</td>" +
+        '<td style="text-align:right;font-variant-numeric:tabular-nums;">' + fmt(r.value) + "</td>" +
+        '<td style="text-align:right;color:' + dirColor(r.dayChangePct) + ';">' + pct(r.dayChangePct) + "</td></tr>";
+    }).join("");
+    host.innerHTML = '<table class="data-table holdings" style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;">' +
+      '<thead><tr style="text-align:left;color:var(--ink-muted);font-size:11px;">' +
+      "<th>Instrument</th><th>Type</th><th>Account</th><th style=\"text-align:right;\">Qty</th><th style=\"text-align:right;\">Value</th><th style=\"text-align:right;\">Day Δ</th></tr></thead>" +
+      "<tbody>" + body + "</tbody></table>";
+  }
+
+  function alerts() {
+    var list = [];
+    var fp = financialsPct(), ti = topIssuer(), ov = mfOverlap(), dp = dayPnL();
+    if (fp > 30) list.push({ level: "serious", icon: "⚠", title: "Sector concentration", text: "Financials are <b>" + fp.toFixed(1) + "%</b> of your market value — above the 30% comfort band. Top issuer <b>" + esc(ti.name) + "</b> alone is " + ti.pct.toFixed(1) + "%.", link: "analytics" });
+    if (ov && ov.pct >= 60) list.push({ level: "warn", icon: "⚙", title: "Fund overlap", text: "<b>" + esc(ov.a.name.split(" —")[0]) + "</b> &amp; <b>" + esc(ov.b.name.split(" —")[0]) + "</b> overlap ~" + ov.pct + "% (" + ov.common.length + " common holdings) — less diversified than it looks.", link: "analytics" });
+    var dupes = mergedHoldings().filter(function (r) { return r.accounts.length > 1; });
+    if (dupes.length) list.push({ level: "info", icon: "✓", title: "Consolidated view", text: dupes.map(function (d) { return d.symbol; }).join(" &amp; ") + " held across 2 brokers — now merged into one holding.", link: "dashboard" });
+    if (idleCash() > 0) list.push({ level: "warn", icon: "○", title: "Idle cash", text: "<b>" + fmt(idleCash()) + "</b> sitting idle at ~0%. " + suitableProducts().length + " suitable options in Discover.", link: "invest" });
+    if (dp.rupees < 0) list.push({ level: "info", icon: "↓", title: "Today's move", text: "Portfolio <b>" + pct(dp.pct) + "</b> today, led by " + esc(riskiestHolding().symbol) + " " + pct(riskiestHolding().dayChangePct) + " and bank stocks.", link: "copilot" });
+    return list;
+  }
+  function renderAlerts() {
+    var host = $("alerts-feed"); if (!host) return;
+    host.innerHTML = alerts().map(function (a) {
+      return '<div class="alert alert-' + a.level + '" style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--hairline);cursor:pointer;" data-link="' + a.link + '">' +
+        '<span class="alert-icon" aria-hidden="true">' + a.icon + "</span>" +
+        '<div><div style="font-weight:600;font-size:13px;">' + esc(a.title) + "</div>" +
+        '<div style="font-size:12px;color:var(--ink-2);">' + a.text + "</div></div></div>";
+    }).join("");
+    Array.prototype.forEach.call(host.querySelectorAll("[data-link]"), function (n) {
+      n.addEventListener("click", function () { switchPanel(n.getAttribute("data-link")); });
+    });
+  }
+
+  function renderDashboard() {
+    renderKPIs();
+    renderDonut($("alloc-donut"));
+    renderLine($("value-line"));
+    renderAccountsStrip();
+    renderHoldingsTable();
+    renderAlerts();
+  }
+
+  function renderAnalytics() {
+    renderSectorBars($("sector-bars"));
+    // concentration card
+    var cc = $("concentration-card");
+    if (cc) {
+      var fp = financialsPct(), ti = topIssuer();
+      var statusF = fp > 30 ? "serious" : fp > 20 ? "warn" : "good";
+      cc.innerHTML = '<h3 style="margin:0 0 8px;">Concentration</h3>' +
+        row("Top sector — Financials", fp.toFixed(1) + "%", statusF) +
+        row("Top issuer — " + esc(ti.name), ti.pct.toFixed(1) + "%", ti.pct > 15 ? "warn" : "good") +
+        '<p style="font-size:12px;color:var(--ink-muted);margin:8px 0 0;">A single-sector weight above 30% or one issuer above 15% raises drawdown risk.</p>';
+    }
+    // overlap card
+    var oc = $("overlap-card");
+    if (oc) {
+      var ov = mfOverlap();
+      if (ov) {
+        oc.innerHTML = '<h3 style="margin:0 0 8px;">MF overlap</h3>' +
+          '<div style="font-size:13px;">' + esc(ov.a.name.split(" —")[0]) + " &amp; " + esc(ov.b.name.split(" —")[0]) + "</div>" +
+          row("Portfolio overlap", ov.pct + "%", ov.pct >= 60 ? "warn" : "good") +
+          '<div style="font-size:12px;color:var(--ink-2);margin-top:6px;">Common holdings: ' + ov.common.map(function (c) { return esc(c.name); }).join(", ") + "</div>";
+      } else { oc.innerHTML = '<h3 style="margin:0 0 8px;">MF overlap</h3><p style="color:var(--ink-muted);">Fewer than two look-through funds.</p>'; }
+    }
+    // risk gauge
+    var rc = $("risk-score-card");
+    if (rc) {
+      var sc = state.riskScore != null ? scoreToGauge(state.riskScore) : 50;
+      var lbl = state.riskProfile ? cap(state.riskProfile) : "Not profiled";
+      rc.innerHTML = '<h3 style="margin:0 0 4px;">Portfolio risk</h3><div id="gauge-inner"></div>';
+      renderGauge($("gauge-inner"), sc, lbl);
+      if (!state.riskProfile) rc.innerHTML += '<button class="btn-ghost" data-go="profile" style="margin-top:6px;">Take the risk quiz →</button>';
+      var b = rc.querySelector("[data-go]"); if (b) b.addEventListener("click", function () { switchPanel("profile"); });
+    }
+    // asset mix vs suggested
+    var am = $("asset-mix-card");
+    if (am) { am.innerHTML = '<h3 style="margin:0 0 8px;">Your mix vs suggested</h3><div id="mix-inner"></div>'; renderMixBars($("mix-inner")); }
+  }
+  function row(label, value, status) {
+    return '<div class="stat-row" style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline);">' +
+      '<span style="font-size:13px;color:var(--ink-2);">' + label + "</span>" +
+      '<b class="badge-' + status + '" style="font-variant-numeric:tabular-nums;">' + value + "</b></div>";
+  }
+  function scoreToGauge(raw) {
+    // riskQuiz raw score range 6..24 → 0..100
+    var min = 6, max = 24;
+    return Math.round((raw - min) / (max - min) * 100);
+  }
+  function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+  /* -------------------------------------------------------------- learn */
+  function renderLearn() {
+    var host = $("lesson-grid"); if (!host) return;
+    host.innerHTML = (D.lessons || []).map(function (l) {
+      var done = state.completedLessons.indexOf(l.id) >= 0;
+      return '<button class="lesson-card" data-lesson-id="' + l.id + '" style="text-align:left;cursor:pointer;">' +
+        '<div style="font-size:26px;">' + l.emoji + "</div>" +
+        '<div style="font-weight:600;margin-top:4px;">' + esc(l.title) + "</div>" +
+        '<div style="font-size:11px;color:var(--ink-muted);">' + l.minutes + " min &middot; " + l.quiz.length + " questions</div>" +
+        '<div class="lesson-status" style="margin-top:6px;font-size:12px;color:' + (done ? "var(--good)" : "var(--ink-muted)") + ';">' + (done ? "✓ Completed" : "Not started") + "</div></button>";
+    }).join("");
+    Array.prototype.forEach.call(host.querySelectorAll("[data-lesson-id]"), function (n) {
+      n.addEventListener("click", function () { openLesson(n.getAttribute("data-lesson-id")); });
+    });
+  }
+
+  function openLesson(id) {
+    var l = (D.lessons || []).filter(function (x) { return x.id === id; })[0];
+    if (!l) return;
+    var secHtml = l.sections.map(function (s) {
+      return '<div style="margin-bottom:12px;"><h4 style="margin:0 0 4px;">' + esc(s.h) + "</h4><p style=\"margin:0;color:var(--ink-2);font-size:13px;line-height:1.5;\">" + esc(s.p) + "</p></div>";
+    }).join("");
+    var quizHtml = l.quiz.map(function (q, qi) {
+      var opts = q.options.map(function (o, oi) {
+        return '<label style="display:block;padding:6px 8px;border:1px solid var(--hairline);border-radius:6px;margin:4px 0;cursor:pointer;font-size:13px;">' +
+          '<input type="radio" name="q' + qi + '" value="' + oi + '" style="margin-right:8px;">' + esc(o) + "</label>";
+      }).join("");
+      return '<div class="quiz-q" data-answer="' + q.answer + '" style="margin-bottom:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:2px;">' + (qi + 1) + ". " + esc(q.q) + "</div>" + opts + "</div>";
+    }).join("");
+    var body = '<div class="lesson-modal"><div style="font-size:28px;">' + l.emoji + '</div><h2 style="margin:2px 0 10px;">' + esc(l.title) + "</h2>" +
+      secHtml +
+      '<hr style="border:none;border-top:1px solid var(--hairline);margin:12px 0;">' +
+      '<h3 style="margin:0 0 8px;">Quick check (' + l.quiz.length + " questions)</h3>" + quizHtml +
+      '<div id="quiz-result" style="font-size:13px;margin:8px 0;"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:8px;"><button id="quiz-submit" class="btn-primary">Submit quiz</button><button id="quiz-close" class="btn-ghost">Close</button></div></div>';
+    openModal(body);
+    var sb = $("quiz-submit"), cb = $("quiz-close");
+    if (cb) cb.addEventListener("click", closeModal);
+    if (sb) sb.addEventListener("click", function () { gradeLesson(l); });
+  }
+
+  function gradeLesson(l) {
+    var qs = document.querySelectorAll("#modal-root .quiz-q");
+    var correct = 0, answered = 0;
+    Array.prototype.forEach.call(qs, function (q) {
+      var picked = q.querySelector("input:checked");
+      if (picked) { answered++; if (parseInt(picked.value, 10) === parseInt(q.getAttribute("data-answer"), 10)) correct++; }
+    });
+    var res = $("quiz-result");
+    if (answered < l.quiz.length) { if (res) res.innerHTML = '<span style="color:var(--warn);">Please answer all ' + l.quiz.length + " questions.</span>"; return; }
+    var passed = correct >= 2;
+    if (res) res.innerHTML = passed
+      ? '<span style="color:var(--good);">✓ ' + correct + "/" + l.quiz.length + " correct — lesson complete!</span>"
+      : '<span style="color:var(--critical);">' + correct + "/" + l.quiz.length + " correct — review and try again (need 2).</span>";
+    if (passed && state.completedLessons.indexOf(l.id) < 0) {
+      state.completedLessons.push(l.id); save("completedLessons");
+      audit("lesson", "Completed lesson “" + l.title + "” (" + correct + "/" + l.quiz.length + ") — unlocked related products.");
+      window.dispatchEvent(new CustomEvent("niveshos:lesson-complete", { detail: { lesson: l.id } }));
+      toast("Lesson complete: " + l.title + " — products unlocked");
+      renderLearn(); if (isActive("invest")) renderInvest();
+      var sb = $("quiz-submit"); if (sb) { sb.textContent = "Done"; sb.onclick = closeModal; }
+    }
+  }
+
+  /* -------------------------------------------------------------- profile */
+  var quizPos = 0, quizAnswers = [];
+  function renderProfile() {
+    var host = $("risk-quiz");
+    if (state.riskProfile) {
+      // returning user: show completed state + result (with retake button)
+      if (host) host.innerHTML = '<div style="font-size:13px;color:var(--ink-2);">✓ You\'ve completed the risk quiz. Your result is on the right — retake anytime.</div>';
+      renderRiskResult();
+    } else {
+      quizPos = 0; quizAnswers = [];
+      renderQuizStep();
+      var rr = $("risk-result"); if (rr) rr.innerHTML = '<div style="color:var(--ink-muted);font-size:13px;">Answer the questions to see your profile.</div>';
+    }
+  }
+  function renderQuizStep() {
+    var host = $("risk-quiz"); if (!host) return;
+    var qz = D.riskQuiz || [];
+    if (quizPos >= qz.length) { host.innerHTML = '<div style="font-size:13px;color:var(--good);">✓ Quiz complete — see your profile.</div>'; computeRisk(); return; }
+    var q = qz[quizPos];
+    var progress = Math.round(quizPos / qz.length * 100);
+    host.innerHTML = '<div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:' + progress + '%;"></div></div>' +
+      '<div style="font-size:12px;color:var(--ink-muted);margin-top:8px;">Question ' + (quizPos + 1) + " of " + qz.length + "</div>" +
+      '<h3 style="margin:4px 0 12px;">' + esc(q.q) + "</h3>" +
+      q.options.map(function (o) {
+        return '<button class="quiz-option" data-w="' + o.w + '">' + esc(o.t) + "</button>";
+      }).join("");
+    Array.prototype.forEach.call(host.querySelectorAll(".quiz-option"), function (b) {
+      b.addEventListener("click", function () {
+        Array.prototype.forEach.call(host.querySelectorAll(".quiz-option"), function (x) { x.classList.remove("selected"); });
+        b.classList.add("selected");
+        quizAnswers.push(parseInt(b.getAttribute("data-w"), 10));
+        setTimeout(function () { quizPos++; renderQuizStep(); }, 140);
+      });
+    });
+  }
+  function computeRisk() {
+    var raw = quizAnswers.reduce(function (a, b) { return a + b; }, 0);
+    var tier = raw <= 10 ? "conservative" : raw <= 17 ? "balanced" : "aggressive";
+    state.riskScore = raw; state.riskProfile = tier; save("riskScore"); save("riskProfile");
+    if (D.investor) D.investor.riskProfile = tier;
+    audit("risk", "Risk profile assessed: " + cap(tier) + " (score " + raw + ").");
+    renderRiskResult();
+    if (isActive("invest")) renderInvest();
+    if (isActive("analytics")) renderAnalytics();
+  }
+  function renderRiskResult() {
+    var rr = $("risk-result"); if (!rr) return;
+    var tier = state.riskProfile, raw = state.riskScore;
+    var unlocks = { conservative: "T-Bills, SGB, AAA bonds, index funds", balanced: "+ REITs, InvITs, higher-yield bonds", aggressive: "the full multi-asset catalogue" };
+    rr.innerHTML = '<div class="risk-result-card"><div style="font-size:12px;color:var(--ink-muted);">Your profile</div>' +
+      '<div style="font-size:1.8rem;font-weight:700;">' + cap(tier) + "</div>" +
+      '<div style="font-size:13px;color:var(--ink-2);">Score ' + raw + " — unlocks " + unlocks[tier] + ".</div>" +
+      '<div id="mix-result" style="margin-top:10px;"></div>' +
+      '<button id="retake-quiz" class="btn-ghost" style="margin-top:8px;">Retake quiz</button></div>';
+    renderMixBars($("mix-result"));
+    var rb = $("retake-quiz"); if (rb) rb.addEventListener("click", function () { quizPos = 0; quizAnswers = []; renderQuizStep(); });
+  }
+
+  /* -------------------------------------------------------------- invest */
+  var TIER_RANK = { conservative: 1, balanced: 2, aggressive: 3 };
+  function suitability(p) {
+    if (!p.registered) return { ok: false, gate: "registry", reason: "Not SEBI-registered — blocked for your protection.", link: "trust" };
+    if (!state.riskProfile) return { ok: false, gate: "profile", reason: "Complete your risk profile first.", link: "profile" };
+    if (TIER_RANK[state.riskProfile] < TIER_RANK[p.minTier]) return { ok: false, gate: "tier", reason: "Needs a " + cap(p.minTier) + " profile (you are " + cap(state.riskProfile) + ").", link: "profile" };
+    if (p.requiredLesson && state.completedLessons.indexOf(p.requiredLesson) < 0) {
+      var ln = (D.lessons || []).filter(function (x) { return x.id === p.requiredLesson; })[0];
+      return { ok: false, gate: "lesson", reason: "Finish the “" + (ln ? ln.title : p.requiredLesson) + "” lesson to unlock.", link: "learn" };
+    }
+    return { ok: true, gate: null, reason: "Suitable for your profile.", link: null };
+  }
+  function suitableProducts() {
+    return (D.products || []).filter(function (p) { return suitability(p).ok; });
+  }
+
+  function gradeBadge(g) {
+    return '<span class="risk-grade-badge grade-' + String(g).toLowerCase() + '">' + esc(g) + "</span>";
+  }
+  function nutriRow(label, valHtml) {
+    return '<div class="nutrition-row"><span>' + esc(label) + "</span>" + valHtml + "</div>";
+  }
+  function nutritionLabel(p) {
+    return '<div class="nutrition-label">' +
+      nutriRow("Risk grade", gradeBadge(p.riskGrade)) +
+      nutriRow("Liquidity", "<b>" + esc(p.liquidity) + "</b>") +
+      nutriRow("Complexity", "<b>" + ("●".repeat(p.complexity) + "○".repeat(3 - p.complexity)) + "</b>") +
+      nutriRow("Min invest", "<b>" + fmt(p.minInvest) + "</b>") +
+      nutriRow("Yield / return", "<b>" + esc(p.yieldOrReturn) + "</b>") +
+      nutriRow("Issuer rating", "<b>" + esc(p.issuerRating) + "</b>") + "</div>";
+  }
+  function renderSuitabilityBanner() {
+    var host = $("suitability-banner"); if (!host) return;
+    if (state.riskProfile) {
+      host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        "<span>Profile: <b>" + cap(state.riskProfile) + "</b> — " + suitableProducts().length + " of " + (D.products || []).length + " products suitable.</span>" +
+        '<button id="sb-retake" class="btn-ghost">Retake quiz</button></div>';
+      var b = $("sb-retake"); if (b) b.addEventListener("click", function () { switchPanel("profile"); });
+    } else {
+      host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+        "<span>No risk profile yet — take the 6-question quiz to see what's suitable.</span>" +
+        '<button id="sb-take" class="btn-primary">Take risk quiz →</button></div>';
+      var t = $("sb-take"); if (t) t.addEventListener("click", function () { switchPanel("profile"); });
+    }
+  }
+  function renderInvest() {
+    renderSuitabilityBanner();
+    var host = $("product-grid"); if (!host) return;
+    host.innerHTML = (D.products || []).map(function (p) {
+      var s = suitability(p);
+      var chip = '<span class="cat-chip" style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:6px;padding:1px 7px;font-size:11px;">' + esc(p.category) + "</span>";
+      var badge = p.registered
+        ? '<span class="sebi-badge" style="color:var(--good);font-size:11px;">✓ SEBI-registered</span>'
+        : '<span class="blocked-banner" style="color:var(--critical);font-weight:700;font-size:11px;">⛔ BLOCKED — UNREGISTERED</span>';
+      var gate = s.ok
+        ? '<div class="suit-ok" style="color:var(--good);font-size:12px;margin-top:6px;">✓ ' + esc(s.reason) + "</div>"
+        : '<div class="suit-blocked" style="color:var(--serious);font-size:12px;margin-top:6px;">🔒 ' + esc(s.reason) + "</div>";
+      return '<div class="product-card" data-product="' + p.id + '" style="cursor:pointer;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px;"><div style="font-weight:600;">' + esc(p.name) + "</div>" + gradeBadge(p.riskGrade) + "</div>" +
+        '<div style="margin:4px 0;">' + chip + " " + badge + "</div>" +
+        '<div style="font-size:12px;color:var(--ink-2);">' + esc(p.yieldOrReturn) + " &middot; Min " + fmt(p.minInvest) + "</div>" +
+        gate + "</div>";
+    }).join("");
+    Array.prototype.forEach.call(host.querySelectorAll("[data-product]"), function (n) {
+      n.addEventListener("click", function () { openProduct(n.getAttribute("data-product")); });
+    });
+  }
+
+  function openProduct(id) {
+    var p = (D.products || []).filter(function (x) { return x.id === id; })[0]; if (!p) return;
+    var s = suitability(p);
+    var action;
+    if (s.ok) {
+      action = '<div style="margin-top:12px;"><label style="font-size:12px;color:var(--ink-muted);">Amount to invest (min ' + fmt(p.minInvest) + ')</label>' +
+        '<input id="invest-amt" type="number" min="' + p.minInvest + '" value="' + p.minInvest + '" style="display:block;width:100%;padding:8px;margin:4px 0;border:1px solid var(--hairline);border-radius:6px;background:var(--surface-2);color:var(--ink);">' +
+        '<button id="invest-go" class="btn-primary" style="width:100%;">Route order via ' + esc(defaultBroker()) + "</button></div>";
+    } else {
+      action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
+        '<div style="color:var(--serious);font-weight:600;">🔒 ' + esc(s.reason) + "</div>" +
+        (s.link ? '<button id="invest-fix" class="btn-primary" style="margin-top:8px;">Go fix this →</button>' : "") + "</div>";
+    }
+    var body = '<div class="product-modal"><div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">' +
+      '<h2 style="margin:0;">' + esc(p.name) + "</h2>" + gradeBadge(p.riskGrade) + "</div>" +
+      '<div style="margin:6px 0;color:var(--ink-muted);font-size:12px;">' + esc(p.category) + "</div>" +
+      '<p style="font-size:13px;color:var(--ink-2);line-height:1.5;">' + esc(p.blurb) + "</p>" +
+      nutritionLabel(p) + action +
+      '<div id="order-progress" style="margin-top:12px;"></div>' +
+      '<button id="prod-close" class="btn-ghost" style="margin-top:10px;">Close</button></div>';
+    openModal(body);
+    audit("suitability", "Suitability check on “" + p.name + "” — " + (s.ok ? "PASS" : "BLOCKED (" + s.gate + ")") + ".");
+    if (!p.registered) audit("warning", "Unregistered-scheme warning shown for “" + p.name + "”.");
+    var cl = $("prod-close"); if (cl) cl.addEventListener("click", closeModal);
+    var go = $("invest-go"); if (go) go.addEventListener("click", function () { routeOrder(p); });
+    var fx = $("invest-fix"); if (fx) fx.addEventListener("click", function () { closeModal(); switchPanel(s.link); });
+  }
+  function defaultBroker() {
+    var a = (D.accounts || [])[0];
+    return a ? a.broker : "your broker";
+  }
+
+  function routeOrder(p) {
+    var amtEl = $("invest-amt");
+    var amt = amtEl ? parseFloat(amtEl.value) : p.minInvest;
+    if (!amt || amt < p.minInvest) { toast("Minimum investment is " + fmt(p.minInvest)); return; }
+    var prog = $("order-progress"); var go = $("invest-go"); if (go) go.disabled = true;
+    var steps = ["Order created", "Sent to " + defaultBroker(), "Confirmed ✓"];
+    var i = 0;
+    function draw() {
+      if (!prog) return;
+      prog.innerHTML = steps.map(function (s, si) {
+        var stFmt = si < i ? "var(--good)" : si === i ? "var(--accent)" : "var(--ink-muted)";
+        var mark = si < i ? "✓" : si === i ? "●" : "○";
+        return '<div style="display:flex;gap:8px;padding:3px 0;color:' + stFmt + ';font-size:13px;"><span>' + mark + "</span>" + esc(s) + "</div>";
+      }).join("");
+    }
+    draw();
+    var timer = setInterval(function () {
+      i++;
+      draw();
+      if (i >= steps.length) {
+        clearInterval(timer);
+        commitPurchase(p, amt);
+        if (prog) prog.innerHTML += '<div style="color:var(--good);margin-top:6px;font-weight:600;">Added to your portfolio.</div>';
+      }
+    }, 750);
+  }
+  function commitPurchase(p, amt) {
+    var qty = p.price ? Math.max(1, Math.round(amt / p.price)) : 1;
+    var sectorMap = { reit: "Real Estate", invit: "Infrastructure", bond: "Financials", mf: "Diversified", etf: "Commodities" };
+    var holding = {
+      id: "buy_" + Date.now(), accountId: (D.accounts[0] || {}).id,
+      symbol: p.id.replace("p_", "").toUpperCase(), name: p.name,
+      assetClass: p.assetClass === "scam" ? "bond" : p.assetClass,
+      sector: sectorMap[p.assetClass] || "Other",
+      qty: qty, avgPrice: p.price || amt, ltp: p.price || amt, dayChangePct: 0
+    };
+    state.purchases.push(holding); save("purchases");
+    audit("order", "Order confirmed: " + fmt(amt) + " in “" + p.name + "” via " + defaultBroker() + " (" + qty + " units).");
+    toast("Order confirmed — " + p.name);
+    renderDashboard(); renderAnalytics(); renderInvest();
+  }
+
+  /* -------------------------------------------------------------- copilot */
+  var SUGGEST_CHIPS = [
+    "Why is my portfolio down today?",
+    "Am I overexposed anywhere?",
+    "Explain REITs simply",
+    "What should I do with idle cash?",
+    "Show my riskiest holding"
+  ];
+  var ADVICE_NOTE = '<div class="advice-note" style="font-size:11px;color:var(--ink-muted);margin-top:8px;border-top:1px solid var(--hairline);padding-top:6px;">ℹ Informational &amp; educational only, not investment advice (SEBI RIA boundary).</div>';
+
+  function renderCopilot() {
+    var chips = $("chat-suggestions");
+    if (chips) {
+      chips.innerHTML = SUGGEST_CHIPS.map(function (c) {
+        return '<button class="chip" type="button">' + esc(c) + "</button>";
+      }).join("");
+      Array.prototype.forEach.call(chips.querySelectorAll(".chip"), function (b) {
+        b.addEventListener("click", function () { sendChat(b.textContent); });
+      });
+    }
+    var form = $("chat-form");
+    if (form && !form._wired) {
+      form._wired = true;
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var inp = $("chat-input");
+        if (inp && inp.value.trim()) { sendChat(inp.value.trim()); inp.value = ""; }
+      });
+    }
+    var log = $("chat-log");
+    if (log && !log._greeted) {
+      log._greeted = true;
+      addMsg("assistant", "<b>Namaste, Priya.</b> I read your live portfolio. Ask me why you're down today, where you're overexposed, what to do with idle cash, or to explain any instrument. Try a chip below." + ADVICE_NOTE);
+    }
+  }
+  function addMsg(who, html) {
+    var log = $("chat-log"); if (!log) return null;
+    var m = el("div", "chat-bubble " + (who === "user" ? "user" : "assistant"));
+    m.innerHTML = html;
+    log.appendChild(m); log.scrollTop = log.scrollHeight;
+    return m;
+  }
+  function sendChat(text) {
+    addMsg("user", esc(text));
+    var typing = addMsg("assistant", '<span class="typing-indicator">thinking…</span>');
+    var delay = 600 + Math.random() * 300;
+    setTimeout(function () {
+      if (typing && typing.parentNode) typing.parentNode.removeChild(typing);
+      addMsg("assistant", copilotAnswer(text));
+    }, delay);
+  }
+
+  function copilotAnswer(text) {
+    var q = text.toLowerCase();
+    var ans;
+    // 9. scam check (before generic)
+    if (/quickrich|agro gold|assured|guaranteed|24%/.test(q)) {
+      ans = "<b>⛔ Red flag.</b> “QuickRich Agro Gold Scheme” promises <b>24% assured returns</b> and is <b>not found in any SEBI or exchange registry</b>. Guaranteed high returns are a classic fraud marker — NiveshOS blocks it. Verified alternatives are in Discover.";
+    } else if (/(why).*(down|drop|fall|red|lower)|down today|drop today/.test(q)) {
+      var dp = dayPnL(), rk = riskiestHolding();
+      ans = "<b>You're " + pct(dp.pct) + " today (" + fmtSigned(dp.rupees) + ").</b> The two biggest draggers:<ul style=\"margin:6px 0;padding-left:18px;\"><li><b>" + esc(rk.name) + "</b> " + pct(rk.dayChangePct) + "</li><li><b>Financials</b> (HDFC Bank / ICICI Bank) softened ~2%</li></ul>Your gold ETF is up " + pct(0.8) + ", cushioning some of it.";
+    } else if (/overexpos|concentrat|too much|overweight|risk.*sector|banks?/.test(q)) {
+      var ti = topIssuer();
+      ans = "<b>Yes — you're bank-heavy.</b> Financials are <b>" + financialsPct().toFixed(1) + "%</b> of your market value (comfort band is ~30%). Your single largest issuer, <b>" + esc(ti.name) + "</b>, is " + ti.pct.toFixed(1) + "% on its own. Spreading into non-financial or non-equity assets would reduce this.";
+    } else if (/overlap|same stocks|two funds|duplicate fund/.test(q)) {
+      var ov = mfOverlap();
+      ans = ov ? "<b>Your two funds overlap ~" + ov.pct + "%.</b> " + esc(ov.a.name.split(" —")[0]) + " and " + esc(ov.b.name.split(" —")[0]) + " share " + ov.common.length + " of their top 5: <b>" + ov.common.map(function (c) { return esc(c.name); }).join(", ") + "</b>. Holding both gives less diversification than it looks."
+        : "I couldn't find two look-through funds to compare.";
+    } else if (/idle cash|spare cash|cash lying|do with.*cash|park/.test(q)) {
+      var sp = suitableProducts().filter(function (p) { return p.liquidity !== "Low"; }).slice(0, 2);
+      var list = sp.length ? sp.map(function (p) { return "<li><b>" + esc(p.name) + "</b> — " + esc(p.yieldOrReturn) + "</li>"; }).join("")
+        : "<li>Take the risk quiz to unlock suitable options.</li>";
+      ans = "<b>" + fmt(idleCash()) + " is sitting idle</b> at ~0%. Based on your " + (state.riskProfile ? cap(state.riskProfile) + " profile" : "portfolio") + ", suitable low-friction options:<ul style=\"margin:6px 0;padding-left:18px;\">" + list + "</ul>";
+    } else if (/riskiest|most risky|biggest risk|volatile|worst holding/.test(q)) {
+      var r = riskiestHolding();
+      ans = "<b>" + esc(r.name) + "</b> is your sharpest mover today at " + pct(r.dayChangePct) + " (value " + fmt(hv(r)) + "). Single-stock moves like this are why your " + financialsPct().toFixed(0) + "% financials tilt matters — concentrated bets swing hardest.";
+    } else if (/what can i buy|what should i buy|suitable|recommend|invest in|buy/.test(q)) {
+      var sp2 = suitableProducts().slice(0, 4);
+      ans = state.riskProfile
+        ? "<b>With your " + cap(state.riskProfile) + " profile</b>, these pass every suitability gate:<ul style=\"margin:6px 0;padding-left:18px;\">" + (sp2.length ? sp2.map(function (p) { return "<li>" + esc(p.name) + " — " + esc(p.yieldOrReturn) + "</li>"; }).join("") : "<li>Complete a required lesson to unlock products.</li>") + "</ul>Open Discover for the full list."
+        : "First take the 6-question <b>risk quiz</b> in Profile — suitability gating needs your tier before I can list what you can buy.";
+    } else if (/how am i doing|portfolio value|net worth|total value|overall/.test(q)) {
+      var td = thirtyDay();
+      ans = "<b>Net worth: " + fmt(netWorth()) + ".</b> Over 30 days you're " + pct(td.pct) + " (from " + fmt(td.from) + "). Invested cost is " + fmt(invested()) + ", so you're sitting on " + fmtSigned(marketValue() - invested()) + " unrealised, with " + fmt(idleCash()) + " in cash.";
+    } else if (/reit/.test(q)) {
+      ans = explainAns("REIT", "A <b>REIT</b> lets you be a tiny landlord: it owns rent-earning offices/malls, trades like a share, and pays out 90%+ of rent as regular distributions.", "reit");
+    } else if (/invit/.test(q)) {
+      ans = explainAns("InvIT", "An <b>InvIT</b> is the REIT idea for infrastructure — power lines, highways, pipelines. Steady contracted cash flows mean high (9–11%) payouts, but part is return of capital.", "invit");
+    } else if (/\bbond\b|corporate bond|debenture|ncd|coupon/.test(q)) {
+      ans = explainAns("Corporate bonds", "A <b>bond</b> is a loan to a company: fixed coupon, principal back at maturity. Ratings (AAA safest) grade the risk — a higher coupon means higher risk, not free money.", "bonds");
+    } else if (/\bsgb\b|gold bond|sovereign gold/.test(q)) {
+      ans = explainAns("Sovereign Gold Bonds", "An <b>SGB</b> is RBI-issued, tracks gold, pays 2.5% interest a year, and is tax-free on maturity — gold exposure without lockers or making charges.", "sgb");
+    } else {
+      ans = "I can help with your <b>live portfolio</b>. Try:<ul style=\"margin:6px 0;padding-left:18px;\"><li>Why am I down today?</li><li>Am I overexposed anywhere?</li><li>Explain REITs / InvITs / bonds / SGBs</li><li>What should I do with idle cash?</li><li>What can I buy?</li><li>Is the QuickRich scheme safe?</li></ul>";
+    }
+    return ans + ADVICE_NOTE;
+  }
+  function explainAns(name, body, lessonId) {
+    var done = state.completedLessons.indexOf(lessonId) >= 0;
+    return body + '<div style="margin-top:6px;"><a href="#" data-lesson-link="' + lessonId + '" style="color:var(--accent);">' + (done ? "Revisit" : "Open") + " the " + esc(name) + " lesson →</a></div>";
+  }
+
+  /* -------------------------------------------------------------- trust */
+  function renderTrust() {
+    var cl = $("consent-ledger");
+    if (cl) {
+      cl.innerHTML = state.consents.length ? state.consents.map(function (c, i) {
+        return '<div class="consent-row" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--hairline);">' +
+          '<div><div style="font-weight:600;font-size:13px;">' + esc(c.scope) + "</div>" +
+          '<div style="font-size:11px;color:var(--ink-muted);">Granted ' + esc(c.grantedOn) + " &middot; expires " + esc(c.expiry) + "</div></div>" +
+          (c.active
+            ? '<button class="btn-ghost revoke-btn" data-idx="' + i + '" style="font-size:12px;">Revoke</button>'
+            : '<span style="color:var(--ink-muted);font-size:12px;">Revoked</span>') + "</div>";
+      }).join("") : '<p style="color:var(--ink-muted);">No consents on record.</p>';
+      Array.prototype.forEach.call(cl.querySelectorAll(".revoke-btn"), function (b) {
+        b.addEventListener("click", function () {
+          var idx = parseInt(b.getAttribute("data-idx"), 10);
+          state.consents[idx].active = false; save("consents");
+          audit("consent", "Consent revoked: " + state.consents[idx].scope + ".");
+          renderTrust();
+        });
+      });
+    }
+    var at = $("audit-trail");
+    if (at) {
+      at.innerHTML = state.auditTrail.length ? state.auditTrail.slice().reverse().map(function (a) {
+        return '<div class="audit-item" style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--hairline);font-size:12px;">' +
+          '<span style="color:var(--ink-muted);white-space:nowrap;font-variant-numeric:tabular-nums;">' + esc(a.ts) + "</span>" +
+          '<span class="audit-kind" style="text-transform:uppercase;font-size:10px;color:var(--accent);white-space:nowrap;">' + esc(a.kind) + "</span>" +
+          '<span style="color:var(--ink-2);">' + esc(a.text) + "</span></div>";
+      }).join("") : '<p style="color:var(--ink-muted);">Audit trail is empty.</p>';
+    }
+    var rc = $("registry-card");
+    if (rc) {
+      var verified = (D.products || []).filter(function (p) { return p.registered; }).length;
+      var blocked = (D.products || []).length - verified;
+      rc.innerHTML = '<h3 style="margin:0 0 8px;">Registry check</h3>' +
+        '<p style="font-size:13px;color:var(--ink-2);">Every product is checked against a mock SEBI / exchange registry before it can be shown as investable.</p>' +
+        '<div style="display:flex;gap:16px;margin-top:8px;">' +
+        '<div><div style="font-size:1.6rem;font-weight:700;color:var(--good);">' + verified + '</div><div style="font-size:11px;color:var(--ink-muted);">Verified</div></div>' +
+        '<div><div style="font-size:1.6rem;font-weight:700;color:var(--critical);">' + blocked + '</div><div style="font-size:11px;color:var(--ink-muted);">Blocked</div></div></div>';
+    }
+  }
+
+  /* ============================================================ MODAL / TOAST */
+  function openModal(html) {
+    var root = $("modal-root"); if (!root) return;
+    root.hidden = false;
+    root.innerHTML = '<div class="modal-backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:5vh 16px;z-index:1000;">' +
+      '<div class="modal-card" style="max-width:480px;width:100%;">' + html + "</div></div>";
+    var bd = root.querySelector(".modal-backdrop");
+    if (bd) bd.addEventListener("click", function (e) { if (e.target === bd) closeModal(); });
+  }
+  function closeModal() { var root = $("modal-root"); if (root) { root.hidden = true; root.innerHTML = ""; } }
+
+  function toast(msg, type) {
+    var root = $("toast-root"); if (!root) return;
+    var cls = "toast toast-" + (type || "success");
+    var t = el("div", cls, esc(msg));
+    root.appendChild(t);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 3200);
+  }
+
+  /* ============================================================ ROUTER */
+  var PANELS = ["dashboard", "analytics", "learn", "profile", "invest", "copilot", "trust"];
+  var current = "dashboard";
+  function isActive(name) { return current === name; }
+  function renderPanel(name) {
+    switch (name) {
+      case "dashboard": renderDashboard(); break;
+      case "analytics": renderAnalytics(); break;
+      case "learn": renderLearn(); break;
+      case "profile": renderProfile(); break;
+      case "invest": renderInvest(); break;
+      case "copilot": renderCopilot(); break;
+      case "trust": renderTrust(); break;
+    }
+  }
+  function switchPanel(name) {
+    if (PANELS.indexOf(name) < 0) return;
+    current = name;
+    PANELS.forEach(function (p) {
+      var sec = $("panel-" + p);
+      if (sec) sec.classList.toggle("active", p === name);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-btn"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-panel") === name);
+    });
+    renderPanel(name);
+    window.dispatchEvent(new CustomEvent("panelchange", { detail: { panel: name } }));
+  }
+
+  function renderAll() {
+    PANELS.forEach(renderPanel);
+  }
+
+  /* ============================================================ THEME */
+  function applyTheme() {
+    document.documentElement.setAttribute("data-theme", state.theme === "light" ? "light" : "dark");
+  }
+  function wireChrome() {
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-btn"), function (b) {
+      b.addEventListener("click", function () { switchPanel(b.getAttribute("data-panel")); });
+    });
+    var tt = $("theme-toggle");
+    if (tt) tt.addEventListener("click", function () {
+      state.theme = state.theme === "light" ? "dark" : "light"; save("theme"); applyTheme();
+    });
+    // delegated: "open the X lesson" links inside chat bubbles or modals
+    document.addEventListener("click", function (e) {
+      var a = e.target && e.target.closest ? e.target.closest("[data-lesson-link]") : null;
+      if (!a) return;
+      e.preventDefault();
+      closeModal(); switchPanel("learn"); openLesson(a.getAttribute("data-lesson-link"));
+    });
+  }
+
+  /* ============================================================ ONBOARDING */
+  var CONSENT_SCOPES = [
+    { id: "nsdl", scope: "NSDL demat holdings", desc: "Read-only equity & bond holdings from your NSDL demat." },
+    { id: "cdsl", scope: "CDSL demat holdings", desc: "Read-only holdings from your CDSL demat account." },
+    { id: "mf", scope: "MF folios (CAMS / KFintech)", desc: "Mutual-fund folios and NAVs via RTA feeds." },
+    { id: "bank", scope: "Bank balance (AA)", desc: "Idle/settlement cash balance via Account Aggregator." }
+  ];
+  var CONSENT_MAP = [["consent-nsdl", "nsdl"], ["consent-cdsl", "cdsl"], ["consent-mf", "mf"], ["consent-bank", "bank"]];
+  // Agent B ships the full static 3-step markup in #onboarding; we only DRIVE it.
+  function initOnboarding() {
+    var root = $("onboarding");
+    if (!root) { finishBoot(); return; }
+    root.hidden = false;
+    showOnbStep(1);
+    bindNext("onboarding-next-1", function () { showOnbStep(2); });
+    bindNext("onboarding-back-2", function () { showOnbStep(1); });
+    bindNext("grant-consent-btn", function () { grantFromCheckboxes(); showOnbStep(3); runFetch(root); });
+    bindNext("onboarding-done", function () { completeOnboarding(root); });
+    var skip = $("onboarding-skip");
+    if (skip) skip.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (!state.consents.length) grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
+      completeOnboarding(root);
+    });
+  }
+  function showOnbStep(n) {
+    Array.prototype.forEach.call(document.querySelectorAll(".onboarding-step"), function (s) {
+      s.classList.toggle("active", s.getAttribute("data-step") === String(n));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".onboarding-dot"), function (d) {
+      d.classList.toggle("active", d.getAttribute("data-dot") === String(n));
+    });
+  }
+  function grantFromCheckboxes() {
+    var ids = [];
+    CONSENT_MAP.forEach(function (pair) { var cb = $(pair[0]); if (!cb || cb.checked) ids.push(pair[1]); });
+    if (!ids.length) ids = CONSENT_SCOPES.map(function (c) { return c.id; });
+    grantConsents(ids);
+  }
+  function runFetch(root) {
+    var rowIds = ["fetch-nsdl", "fetch-cdsl", "fetch-mf", "fetch-bank"];
+    var done = $("onboarding-done"); if (done) done.disabled = true;
+    var i = 0;
+    var timer = setInterval(function () {
+      if (i < rowIds.length) {
+        var r = $(rowIds[i]);
+        if (r) {
+          r.classList.remove("loading"); r.classList.add("done");
+          var st = r.querySelector(".fetch-status, .status, .fetch-state");
+          if (st) st.textContent = "✓ synced";
+        }
+        i++;
+      } else {
+        clearInterval(timer);
+        if (done) done.disabled = false; else completeOnboarding(root);
+      }
+    }, 500);
+  }
+  function bindNext(id, fn) { var b = $(id); if (b) b.addEventListener("click", fn); }
+  function grantConsents(ids) {
+    state.consents = ids.map(function (id) {
+      var c = CONSENT_SCOPES.filter(function (x) { return x.id === id; })[0] || { scope: id };
+      return { scope: c.scope, grantedOn: TODAY, expiry: "2027-07-06", active: true };
+    });
+    save("consents");
+    state.consents.forEach(function (c) { audit("consent", "AA consent granted: " + c.scope + " (expires " + c.expiry + ")."); });
+  }
+  function completeOnboarding(root) {
+    if (!state.onboarded) {
+      state.onboarded = true; save("onboarded");
+      audit("onboard", "Onboarding complete — 4 sources linked, portfolio consolidated.");
+      window.dispatchEvent(new CustomEvent("niveshos:onboarded", {}));
+    }
+    if (root) { root.hidden = true; }
+    finishBoot();
+  }
+
+  /* ============================================================ BOOT */
+  function finishBoot() {
+    if (D.investor) D.investor.riskProfile = state.riskProfile;
+    renderAll();
+    switchPanel("dashboard");
+    if (!_rendered) {
+      _rendered = true;
+      window.dispatchEvent(new CustomEvent("niveshos:rendered", {}));
+    }
+  }
+  function boot() {
+    loadState();
+    applyTheme();
+    wireChrome();
+    var params = new URLSearchParams(window.location.search);
+    if (params.get("demo") === "1" && !state.onboarded) {
+      grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
+      completeOnboarding($("onboarding"));
+      var p = params.get("panel"); if (p) switchPanel(p);
+      return;
+    }
+    if (!state.onboarded) initOnboarding();
+    else {
+      var ob = $("onboarding"); if (ob) ob.hidden = true; finishBoot();
+      var p2 = params.get("panel"); if (p2) switchPanel(p2);
+    }
+  }
+
+  // expose for anim.js / debug
+  window.NIVESH = { switchPanel: switchPanel, state: state, fmt: fmt };
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+
+})();
