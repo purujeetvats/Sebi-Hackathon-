@@ -1,95 +1,201 @@
 /* ==========================================================================
    NiveshOS — data.js  (Agent A / logic)
-   Real, exchange-listed instruments held in a simulated Account Aggregator /
-   NSDL / CDSL / CAMS consolidation. Holdings, quantities and folios are
-   illustrative for one demo investor; the *prices and NAVs* are REAL, pulled
-   from open data and baked into real-quotes.js (window.REAL_QUOTES), which is
-   merged over the fallbacks at the bottom of this file. Rebuild the snapshot
-   with `node tools/build-real-data.mjs`. MF NAVs can also refresh live in-app
-   via api.mfapi.in (CORS-enabled). Reference date: 2026-07-06.
+   Real, exchange-listed instruments in a simulated Account Aggregator /
+   NSDL / CDSL / CAMS consolidation. Now MULTI-USER: `users[]` each own their
+   accounts + holdings (diverse personas); `products`, `lessons`, `riskQuiz`
+   are the shared catalogue + education. The app points its live view at the
+   signed-in user after a LOCAL, client-side login.
 
-   Baked ltp/nav below are the last snapshot values, kept as an OFFLINE
-   FALLBACK so the app is fully correct even if real-quotes.js is absent.
-   Quantities are tuned so the concentration story holds at real prices:
-   HDFC Bank ~21% (top issuer), Financials ~40% of market value.
+   SECURITY NOTE: the login is a LOCAL DEMO only — credentials live in this
+   file and are checked in the browser. It is not real authentication and is
+   trivially bypassable; it exists to demo per-user portfolios, not to secure
+   anything. No backend, no network auth.
+
+   Prices/NAVs are REAL, merged from real-quotes.js over baked fallbacks.
+   Rebuild the snapshot with `node tools/build-real-data.mjs`. Reference date:
+   2026-07-06.
    ========================================================================== */
+
+/* 30 trading-day date axis, ending on the reference date. */
+const NIVESH_DATES = [
+  "2026-06-07","2026-06-08","2026-06-09","2026-06-10","2026-06-11","2026-06-12",
+  "2026-06-13","2026-06-14","2026-06-15","2026-06-16","2026-06-17","2026-06-18",
+  "2026-06-19","2026-06-20","2026-06-21","2026-06-22","2026-06-23","2026-06-24",
+  "2026-06-25","2026-06-26","2026-06-27","2026-06-28","2026-06-29","2026-06-30",
+  "2026-07-01","2026-07-02","2026-07-03","2026-07-04","2026-07-05","2026-07-06"
+];
+
 const NIVESH_DATA = {
 
-  investor: {
-    name: "Priya Sharma",
-    pan: "ABCPS****K",
-    riskProfile: null            // set by the risk quiz at runtime (state)
-  },
+  /* ---- six local demo users, diverse by age / risk / asset mix ---------- */
+  users: [
+    {
+      id: "priya", username: "priya", password: "priya123",
+      name: "Priya Sharma", pan: "ABCPS****K", avatar: "PS",
+      persona: "Balanced saver · bank-heavy, needs diversifying",
+      seed: { onboarded: false, riskProfile: null, completedLessons: [] },
+      accounts: [
+        { id: "acc_zer",  broker: "Zerodha",          depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:12" },
+        { id: "acc_grw",  broker: "Groww",            depository: "CDSL",     type: "Demat & Trading", lastSync: "2026-07-06 09:12" },
+        { id: "acc_hdfc", broker: "HDFC Securities",   depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:11" },
+        { id: "acc_cams", broker: "MF Central (CAMS)", depository: "CAMS RTA", type: "MF Folios",       lastSync: "2026-07-06 08:58" }
+      ],
+      holdings: [
+        { id: "h_hdfc_z", accountId: "acc_zer",  symbol: "HDFCBANK",   name: "HDFC Bank Ltd",         assetClass: "equity", sector: "Financials", qty: 120, avgPrice: 760,  ltp: 829.85, dayChangePct: -1.9 },
+        { id: "h_hdfc_h", accountId: "acc_hdfc", symbol: "HDFCBANK",   name: "HDFC Bank Ltd",         assetClass: "equity", sector: "Financials", qty: 70,  avgPrice: 760,  ltp: 829.85, dayChangePct: -1.9 },
+        { id: "h_icici_z",accountId: "acc_zer",  symbol: "ICICIBANK",  name: "ICICI Bank Ltd",        assetClass: "equity", sector: "Financials", qty: 40,  avgPrice: 1300, ltp: 1426.9, dayChangePct: -2.0 },
+        { id: "h_icici_g",accountId: "acc_grw",  symbol: "ICICIBANK",  name: "ICICI Bank Ltd",        assetClass: "equity", sector: "Financials", qty: 25,  avgPrice: 1300, ltp: 1426.9, dayChangePct: -2.0 },
+        { id: "h_rel",    accountId: "acc_zer",  symbol: "RELIANCE",   name: "Reliance Industries",   assetClass: "equity", sector: "Energy",     qty: 40,  avgPrice: 1360, ltp: 1321.3, dayChangePct: -0.8 },
+        { id: "h_tcs",    accountId: "acc_grw",  symbol: "TCS",        name: "Tata Consultancy Svcs", assetClass: "equity", sector: "IT",         qty: 10,  avgPrice: 1980, ltp: 2057.6, dayChangePct:  0.2 },
+        { id: "h_infy",   accountId: "acc_hdfc", symbol: "INFY",       name: "Infosys Ltd",           assetClass: "equity", sector: "IT",         qty: 25,  avgPrice: 1090, ltp: 1042.2, dayChangePct: -0.2 },
+        { id: "h_tmpv",   accountId: "acc_grw",  symbol: "TMPV",       name: "Tata Motors PV Ltd",    assetClass: "equity", sector: "Auto",       qty: 60,  avgPrice: 360,  ltp: 347.05, dayChangePct: -3.8 },
+        { id: "h_airtel", accountId: "acc_zer",  symbol: "BHARTIARTL", name: "Bharti Airtel Ltd",     assetClass: "equity", sector: "Telecom",    qty: 18,  avgPrice: 1700, ltp: 1925.7, dayChangePct: -1.2 },
+        { id: "h_axis", accountId: "acc_cams", symbol: "AXISBLUE", schemeCode: 120465, name: "Axis Large Cap Fund — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 1800, avgPrice: 60.0, ltp: 69.51, dayChangePct: -2.0,
+          underlying: [
+            { symbol: "HDFCBANK",  name: "HDFC Bank",   weight: 9.2 },
+            { symbol: "ICICIBANK", name: "ICICI Bank",  weight: 8.1 },
+            { symbol: "RELIANCE",  name: "Reliance",    weight: 7.5 },
+            { symbol: "INFY",      name: "Infosys",     weight: 6.3 },
+            { symbol: "TCS",       name: "TCS",         weight: 5.4 }
+          ] },
+        { id: "h_mirae", accountId: "acc_cams", symbol: "MIRAELC", schemeCode: 118825, name: "Mirae Asset Large Cap — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 900, avgPrice: 118.0, ltp: 127.95, dayChangePct: -2.0,
+          underlying: [
+            { symbol: "HDFCBANK",   name: "HDFC Bank",     weight: 8.8 },
+            { symbol: "ICICIBANK",  name: "ICICI Bank",    weight: 7.9 },
+            { symbol: "RELIANCE",   name: "Reliance",      weight: 7.1 },
+            { symbol: "INFY",       name: "Infosys",       weight: 5.8 },
+            { symbol: "BHARTIARTL", name: "Bharti Airtel", weight: 4.9 }
+          ] },
+        { id: "h_tatacap", accountId: "acc_zer",  symbol: "TATACAP81", name: "Tata Capital NCD 8.1% 2029", assetClass: "bond", sector: "Financials",  qty: 50,    avgPrice: 1000, ltp: 1035,   dayChangePct:  0.05 },
+        { id: "h_gold",    accountId: "acc_hdfc", symbol: "GOLDBEES",  name: "Nippon India Gold ETF",      assetClass: "etf",  sector: "Commodities", qty: 500,   avgPrice: 95,   ltp: 119.51, dayChangePct:  0.8 },
+        { id: "h_cash",    accountId: "acc_zer",  symbol: "CASH",      name: "Idle Cash (settlement)",     assetClass: "cash", sector: "Cash",        qty: 52000, avgPrice: 1,    ltp: 1,      dayChangePct:  0.0 }
+      ]
+    },
 
-  /* 4 linked sources across depositories + RTA ------------------------------ */
-  accounts: [
-    { id: "acc_zer",  broker: "Zerodha",         depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:12" },
-    { id: "acc_grw",  broker: "Groww",           depository: "CDSL",     type: "Demat & Trading", lastSync: "2026-07-06 09:12" },
-    { id: "acc_hdfc", broker: "HDFC Securities",  depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:11" },
-    { id: "acc_cams", broker: "MF Central (CAMS)",depository: "CAMS RTA", type: "MF Folios",       lastSync: "2026-07-06 08:58" }
-  ],
+    {
+      id: "rajesh", username: "rajesh", password: "rajesh123",
+      name: "Rajesh Kumar", pan: "AKRPK****M", avatar: "RK",
+      persona: "Conservative retiree (58) · capital-protection, income",
+      seed: { onboarded: true, riskProfile: "conservative", riskScore: 8, completedLessons: ["bonds", "sgb"] },
+      accounts: [
+        { id: "acc_hdfc", broker: "HDFC Securities",   depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:05" },
+        { id: "acc_cams", broker: "MF Central (CAMS)", depository: "CAMS RTA", type: "MF Folios",       lastSync: "2026-07-06 08:50" }
+      ],
+      holdings: [
+        { id: "r_ncd",   accountId: "acc_hdfc", symbol: "TATACAP81", name: "Tata Capital NCD 8.1% 2029", assetClass: "bond", sector: "Financials",  qty: 100, avgPrice: 1000, ltp: 1035,   dayChangePct: 0.05 },
+        { id: "r_sgb",   accountId: "acc_hdfc", symbol: "SGB2032",   name: "Sovereign Gold Bond 2032",   assetClass: "bond", sector: "Commodities", qty: 6,   avgPrice: 6000, ltp: 6480,   dayChangePct: 0.6 },
+        { id: "r_gold",  accountId: "acc_hdfc", symbol: "GOLDBEES",  name: "Nippon India Gold ETF",      assetClass: "etf",  sector: "Commodities", qty: 400, avgPrice: 90,   ltp: 119.51, dayChangePct: 0.8 },
+        { id: "r_nifty", accountId: "acc_cams", symbol: "UTINIF50",  schemeCode: 120716, name: "UTI Nifty 50 Index — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 300, avgPrice: 150, ltp: 170.5, dayChangePct: -0.9 },
+        { id: "r_hdfc",  accountId: "acc_hdfc", symbol: "HDFCBANK",  name: "HDFC Bank Ltd",              assetClass: "equity", sector: "Financials", qty: 30, avgPrice: 790, ltp: 829.85, dayChangePct: -1.9 },
+        { id: "r_cash",  accountId: "acc_hdfc", symbol: "CASH",      name: "Idle Cash (settlement)",     assetClass: "cash", sector: "Cash",        qty: 120000, avgPrice: 1, ltp: 1,      dayChangePct: 0.0 }
+      ]
+    },
 
-  /* ~13 holdings across real NSE securities. HDFCBANK + ICICIBANK duplicated
-     across two brokers (dupe-merge demo). Bank-heavy tilt → ~40% financials of
-     market value (concentration alert). Two large-cap MFs share 4 of 5 top
-     holdings (overlap demo). One AAA corporate bond, one gold ETF, idle cash.
-     ltp/nav are REAL last snapshot values (see real-quotes.js merge below).   */
-  holdings: [
-    // --- Equities (real NSE tickers) -------------------------------------
-    { id: "h_hdfc_z", accountId: "acc_zer",  symbol: "HDFCBANK",   name: "HDFC Bank Ltd",         assetClass: "equity", sector: "Financials", qty: 120, avgPrice: 760,  ltp: 829.85, dayChangePct: -1.9 },
-    { id: "h_hdfc_h", accountId: "acc_hdfc", symbol: "HDFCBANK",   name: "HDFC Bank Ltd",         assetClass: "equity", sector: "Financials", qty: 70,  avgPrice: 760,  ltp: 829.85, dayChangePct: -1.9 },
-    { id: "h_icici_z",accountId: "acc_zer",  symbol: "ICICIBANK",  name: "ICICI Bank Ltd",        assetClass: "equity", sector: "Financials", qty: 40,  avgPrice: 1300, ltp: 1426.9, dayChangePct: -2.0 },
-    { id: "h_icici_g",accountId: "acc_grw",  symbol: "ICICIBANK",  name: "ICICI Bank Ltd",        assetClass: "equity", sector: "Financials", qty: 25,  avgPrice: 1300, ltp: 1426.9, dayChangePct: -2.0 },
-    { id: "h_rel",    accountId: "acc_zer",  symbol: "RELIANCE",   name: "Reliance Industries",   assetClass: "equity", sector: "Energy",     qty: 40,  avgPrice: 1360, ltp: 1321.3, dayChangePct: -0.8 },
-    { id: "h_tcs",    accountId: "acc_grw",  symbol: "TCS",        name: "Tata Consultancy Svcs", assetClass: "equity", sector: "IT",         qty: 10,  avgPrice: 1980, ltp: 2057.6, dayChangePct:  0.2 },
-    { id: "h_infy",   accountId: "acc_hdfc", symbol: "INFY",       name: "Infosys Ltd",           assetClass: "equity", sector: "IT",         qty: 25,  avgPrice: 1090, ltp: 1042.2, dayChangePct: -0.2 },
-    { id: "h_tmpv",   accountId: "acc_grw",  symbol: "TMPV",       name: "Tata Motors PV Ltd",    assetClass: "equity", sector: "Auto",       qty: 60,  avgPrice: 360,  ltp: 347.05, dayChangePct: -3.8 },
-    { id: "h_airtel", accountId: "acc_zer",  symbol: "BHARTIARTL", name: "Bharti Airtel Ltd",     assetClass: "equity", sector: "Telecom",    qty: 18,  avgPrice: 1700, ltp: 1925.7, dayChangePct: -1.2 },
+    {
+      id: "ananya", username: "ananya", password: "ananya123",
+      name: "Ananya Iyer", pan: "AXIPI****R", avatar: "AI",
+      persona: "First-job investor (26) · aggressive, tech-concentrated",
+      seed: { onboarded: true, riskProfile: "aggressive", riskScore: 22, completedLessons: [] },
+      accounts: [
+        { id: "acc_zer", broker: "Zerodha", depository: "NSDL", type: "Demat & Trading", lastSync: "2026-07-06 09:14" },
+        { id: "acc_grw", broker: "Groww",   depository: "CDSL", type: "Demat & Trading", lastSync: "2026-07-06 09:14" }
+      ],
+      holdings: [
+        { id: "a_tcs",  accountId: "acc_zer", symbol: "TCS",     name: "Tata Consultancy Svcs", assetClass: "equity", sector: "IT",    qty: 10, avgPrice: 1900, ltp: 2057.6, dayChangePct: 0.2 },
+        { id: "a_infy", accountId: "acc_zer", symbol: "INFY",    name: "Infosys Ltd",           assetClass: "equity", sector: "IT",    qty: 15, avgPrice: 1000, ltp: 1042.2, dayChangePct: -0.2 },
+        { id: "a_rel",  accountId: "acc_grw", symbol: "RELIANCE",name: "Reliance Industries",   assetClass: "equity", sector: "Energy",qty: 5,  avgPrice: 1400, ltp: 1321.3, dayChangePct: -0.8 },
+        { id: "a_tmpv", accountId: "acc_grw", symbol: "TMPV",    name: "Tata Motors PV Ltd",    assetClass: "equity", sector: "Auto",  qty: 20, avgPrice: 320,  ltp: 347.05, dayChangePct: -3.8 },
+        { id: "a_axis", accountId: "acc_zer", symbol: "AXISBLUE", schemeCode: 120465, name: "Axis Large Cap Fund — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 500, avgPrice: 64, ltp: 69.51, dayChangePct: -2.0,
+          underlying: [
+            { symbol: "HDFCBANK",  name: "HDFC Bank",  weight: 9.2 },
+            { symbol: "ICICIBANK", name: "ICICI Bank", weight: 8.1 },
+            { symbol: "RELIANCE",  name: "Reliance",   weight: 7.5 },
+            { symbol: "INFY",      name: "Infosys",    weight: 6.3 },
+            { symbol: "TCS",       name: "TCS",        weight: 5.4 }
+          ] },
+        { id: "a_cash", accountId: "acc_zer", symbol: "CASH", name: "Idle Cash (settlement)", assetClass: "cash", sector: "Cash", qty: 8000, avgPrice: 1, ltp: 1, dayChangePct: 0.0 }
+      ]
+    },
 
-    // --- Mutual funds (real AMFI scheme codes, ~80% overlap) --------------
-    { id: "h_axis", accountId: "acc_cams", symbol: "AXISBLUE", schemeCode: 120465, name: "Axis Large Cap Fund — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 1800, avgPrice: 60.0, ltp: 69.51, dayChangePct: -2.0,
-      underlying: [
-        { symbol: "HDFCBANK",  name: "HDFC Bank",   weight: 9.2 },
-        { symbol: "ICICIBANK", name: "ICICI Bank",  weight: 8.1 },
-        { symbol: "RELIANCE",  name: "Reliance",    weight: 7.5 },
-        { symbol: "INFY",      name: "Infosys",     weight: 6.3 },
-        { symbol: "TCS",       name: "TCS",         weight: 5.4 }
-      ] },
-    { id: "h_mirae", accountId: "acc_cams", symbol: "MIRAELC", schemeCode: 118825, name: "Mirae Asset Large Cap — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 900, avgPrice: 118.0, ltp: 127.95, dayChangePct: -2.0,
-      underlying: [
-        { symbol: "HDFCBANK",   name: "HDFC Bank",     weight: 8.8 },
-        { symbol: "ICICIBANK",  name: "ICICI Bank",    weight: 7.9 },
-        { symbol: "RELIANCE",   name: "Reliance",      weight: 7.1 },
-        { symbol: "INFY",       name: "Infosys",       weight: 5.8 },
-        { symbol: "BHARTIARTL", name: "Bharti Airtel", weight: 4.9 }
-      ] },
+    {
+      id: "farhan", username: "farhan", password: "farhan123",
+      name: "Mohammed Farhan", pan: "AFZPF****Q", avatar: "MF",
+      persona: "Income investor (45) · REITs, InvITs & bonds",
+      seed: { onboarded: true, riskProfile: "balanced", riskScore: 15, completedLessons: ["reit", "invit", "bonds"] },
+      accounts: [
+        { id: "acc_hdfc", broker: "HDFC Securities", depository: "NSDL", type: "Demat & Trading", lastSync: "2026-07-06 09:08" },
+        { id: "acc_zer",  broker: "Zerodha",         depository: "NSDL", type: "Demat & Trading", lastSync: "2026-07-06 09:10" }
+      ],
+      holdings: [
+        { id: "f_emb",  accountId: "acc_hdfc", symbol: "EMBASSY",   name: "Embassy Office Parks REIT",  assetClass: "reit",  sector: "Real Estate",    qty: 200, avgPrice: 340, ltp: 369.92, dayChangePct: -0.5 },
+        { id: "f_mind", accountId: "acc_hdfc", symbol: "MINDSPACE", name: "Mindspace Business Parks REIT",assetClass: "reit", sector: "Real Estate",    qty: 150, avgPrice: 330, ltp: 345.06, dayChangePct: -0.4 },
+        { id: "f_pg",   accountId: "acc_zer",  symbol: "PGINVIT",   name: "PowerGrid InvIT",            assetClass: "invit", sector: "Infrastructure", qty: 500, avgPrice: 100, ltp: 95.96,  dayChangePct: -0.7 },
+        { id: "f_ig",   accountId: "acc_zer",  symbol: "INDIGRID",  name: "IndiGrid InvIT",             assetClass: "invit", sector: "Infrastructure", qty: 300, avgPrice: 132, ltp: 140.06, dayChangePct: 0.3 },
+        { id: "f_ncd",  accountId: "acc_hdfc", symbol: "TATACAP81", name: "Tata Capital NCD 8.1% 2029", assetClass: "bond",  sector: "Financials",     qty: 50,  avgPrice: 1000,ltp: 1035,   dayChangePct: 0.05 },
+        { id: "f_gold", accountId: "acc_hdfc", symbol: "GOLDBEES",  name: "Nippon India Gold ETF",      assetClass: "etf",   sector: "Commodities",    qty: 200, avgPrice: 100, ltp: 119.51, dayChangePct: 0.8 },
+        { id: "f_cash", accountId: "acc_zer",  symbol: "CASH",      name: "Idle Cash (settlement)",     assetClass: "cash",  sector: "Cash",           qty: 30000, avgPrice: 1, ltp: 1,     dayChangePct: 0.0 }
+      ]
+    },
 
-    // --- Bond / Gold ETF / Cash ------------------------------------------
-    { id: "h_tatacap", accountId: "acc_zer",  symbol: "TATACAP81", name: "Tata Capital NCD 8.1% 2029", assetClass: "bond", sector: "Financials",  qty: 50,    avgPrice: 1000, ltp: 1035,   dayChangePct:  0.05 },
-    { id: "h_gold",    accountId: "acc_hdfc", symbol: "GOLDBEES",  name: "Nippon India Gold ETF",      assetClass: "etf",  sector: "Commodities", qty: 500,   avgPrice: 95,   ltp: 119.51, dayChangePct:  0.8 },
-    { id: "h_cash",    accountId: "acc_zer",  symbol: "CASH",      name: "Idle Cash (settlement)",     assetClass: "cash", sector: "Cash",        qty: 52000, avgPrice: 1,    ltp: 1,      dayChangePct:  0.0 }
-  ],
+    {
+      id: "sunita", username: "sunita", password: "sunita123",
+      name: "Sunita Devi", pan: "BQSPD****N", avatar: "SD",
+      persona: "Just starting out (34) · one index fund + cash",
+      seed: { onboarded: true, riskProfile: null, completedLessons: [] },
+      accounts: [
+        { id: "acc_grw", broker: "Groww", depository: "CDSL", type: "Demat & Trading", lastSync: "2026-07-06 09:20" }
+      ],
+      holdings: [
+        { id: "s_nifty", accountId: "acc_grw", symbol: "UTINIF50", schemeCode: 120716, name: "UTI Nifty 50 Index — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 100, avgPrice: 165, ltp: 170.5, dayChangePct: -0.9 },
+        { id: "s_cash",  accountId: "acc_grw", symbol: "CASH",     name: "Idle Cash (settlement)", assetClass: "cash", sector: "Cash", qty: 15000, avgPrice: 1, ltp: 1, dayChangePct: 0.0 }
+      ]
+    },
 
-  /* 30 daily portfolio totals (net worth) ending today; last point aligns to
-     the live-computed net worth (~₹8.09L). Realistic wobble, last day down. */
-  history: [
-    { t: "2026-06-07", v: 784000 }, { t: "2026-06-08", v: 786800 }, { t: "2026-06-09", v: 782300 },
-    { t: "2026-06-10", v: 790000 }, { t: "2026-06-11", v: 794700 }, { t: "2026-06-12", v: 791400 },
-    { t: "2026-06-13", v: 798000 }, { t: "2026-06-14", v: 802700 }, { t: "2026-06-15", v: 799900 },
-    { t: "2026-06-16", v: 806300 }, { t: "2026-06-17", v: 810700 }, { t: "2026-06-18", v: 807500 },
-    { t: "2026-06-19", v: 813000 }, { t: "2026-06-20", v: 810300 }, { t: "2026-06-21", v: 815600 },
-    { t: "2026-06-22", v: 818900 }, { t: "2026-06-23", v: 814400 }, { t: "2026-06-24", v: 810900 },
-    { t: "2026-06-25", v: 817100 }, { t: "2026-06-26", v: 821500 }, { t: "2026-06-27", v: 818000 },
-    { t: "2026-06-28", v: 813800 }, { t: "2026-06-29", v: 820200 }, { t: "2026-06-30", v: 824700 },
-    { t: "2026-07-01", v: 821100 }, { t: "2026-07-02", v: 815900 }, { t: "2026-07-03", v: 822500 },
-    { t: "2026-07-04", v: 827100 }, { t: "2026-07-05", v: 820500 }, { t: "2026-07-06", v: 809167 }
+    {
+      id: "vikram", username: "vikram", password: "vikram123",
+      name: "Vikram Reddy", pan: "AWVPR****J", avatar: "VR",
+      persona: "High-net-worth (50) · large, all-asset-class book",
+      seed: { onboarded: true, riskProfile: "aggressive", riskScore: 20, completedLessons: ["reit", "invit", "bonds", "sgb", "diversification"] },
+      accounts: [
+        { id: "acc_zer",  broker: "Zerodha",          depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:02" },
+        { id: "acc_hdfc", broker: "HDFC Securities",   depository: "NSDL",     type: "Demat & Trading", lastSync: "2026-07-06 09:03" },
+        { id: "acc_grw",  broker: "Groww",            depository: "CDSL",     type: "Demat & Trading", lastSync: "2026-07-06 09:04" },
+        { id: "acc_cams", broker: "MF Central (CAMS)", depository: "CAMS RTA", type: "MF Folios",       lastSync: "2026-07-06 08:45" }
+      ],
+      holdings: [
+        { id: "v_hdfc",  accountId: "acc_zer",  symbol: "HDFCBANK",  name: "HDFC Bank Ltd",         assetClass: "equity", sector: "Financials", qty: 200, avgPrice: 700,  ltp: 829.85, dayChangePct: -1.9 },
+        { id: "v_icici", accountId: "acc_hdfc", symbol: "ICICIBANK", name: "ICICI Bank Ltd",        assetClass: "equity", sector: "Financials", qty: 100, avgPrice: 1200, ltp: 1426.9, dayChangePct: -2.0 },
+        { id: "v_rel",   accountId: "acc_zer",  symbol: "RELIANCE",  name: "Reliance Industries",   assetClass: "equity", sector: "Energy",     qty: 80,  avgPrice: 1250, ltp: 1321.3, dayChangePct: -0.8 },
+        { id: "v_infy",  accountId: "acc_grw",  symbol: "INFY",      name: "Infosys Ltd",           assetClass: "equity", sector: "IT",         qty: 60,  avgPrice: 980,  ltp: 1042.2, dayChangePct: -0.2 },
+        { id: "v_airtel",accountId: "acc_zer",  symbol: "BHARTIARTL",name: "Bharti Airtel Ltd",     assetClass: "equity", sector: "Telecom",    qty: 40,  avgPrice: 1600, ltp: 1925.7, dayChangePct: -1.2 },
+        { id: "v_axis", accountId: "acc_cams", symbol: "AXISBLUE", schemeCode: 120465, name: "Axis Large Cap Fund — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 3000, avgPrice: 55, ltp: 69.51, dayChangePct: -2.0,
+          underlying: [
+            { symbol: "HDFCBANK",  name: "HDFC Bank",  weight: 9.2 },
+            { symbol: "ICICIBANK", name: "ICICI Bank", weight: 8.1 },
+            { symbol: "RELIANCE",  name: "Reliance",   weight: 7.5 },
+            { symbol: "INFY",      name: "Infosys",    weight: 6.3 },
+            { symbol: "TCS",       name: "TCS",        weight: 5.4 }
+          ] },
+        { id: "v_mirae", accountId: "acc_cams", symbol: "MIRAELC", schemeCode: 118825, name: "Mirae Asset Large Cap — Direct Growth", assetClass: "mf", sector: "Diversified", qty: 1500, avgPrice: 110, ltp: 127.95, dayChangePct: -2.0,
+          underlying: [
+            { symbol: "HDFCBANK",   name: "HDFC Bank",     weight: 8.8 },
+            { symbol: "ICICIBANK",  name: "ICICI Bank",    weight: 7.9 },
+            { symbol: "RELIANCE",   name: "Reliance",      weight: 7.1 },
+            { symbol: "INFY",       name: "Infosys",       weight: 5.8 },
+            { symbol: "BHARTIARTL", name: "Bharti Airtel", weight: 4.9 }
+          ] },
+        { id: "v_emb",  accountId: "acc_hdfc", symbol: "EMBASSY",  name: "Embassy Office Parks REIT", assetClass: "reit",  sector: "Real Estate",    qty: 300, avgPrice: 350, ltp: 369.92, dayChangePct: -0.5 },
+        { id: "v_pg",   accountId: "acc_zer",  symbol: "PGINVIT",  name: "PowerGrid InvIT",           assetClass: "invit", sector: "Infrastructure", qty: 800, avgPrice: 105, ltp: 95.96,  dayChangePct: -0.7 },
+        { id: "v_ncd",  accountId: "acc_hdfc", symbol: "TATACAP81",name: "Tata Capital NCD 8.1% 2029",assetClass: "bond",  sector: "Financials",     qty: 100, avgPrice: 1000,ltp: 1035,   dayChangePct: 0.05 },
+        { id: "v_gold", accountId: "acc_hdfc", symbol: "GOLDBEES", name: "Nippon India Gold ETF",     assetClass: "etf",   sector: "Commodities",    qty: 1000, avgPrice: 80, ltp: 119.51, dayChangePct: 0.8 },
+        { id: "v_cash", accountId: "acc_zer",  symbol: "CASH",     name: "Idle Cash (settlement)",    assetClass: "cash",  sector: "Cash",           qty: 200000, avgPrice: 1, ltp: 1,     dayChangePct: 0.0 }
+      ]
+    }
   ],
 
   /* 9 registered catalogue products + 1 unregistered scam (always BLOCKED).
      Real listed REITs/InvITs carry quoteSym → live NSE price via real-quotes.js;
-     the index fund carries schemeCode → live AMFI NAV. assetClass + price feed
-     the simulated order flow. requiredLesson gates each behind an education
-     module.                                                                  */
+     the index fund carries schemeCode → live AMFI NAV. Shared across users.   */
   products: [
     { id: "p_embassy",  name: "Embassy Office Parks REIT", category: "REIT",            assetClass: "reit",  quoteSym: "EMBASSY",   riskGrade: "B", liquidity: "High", complexity: 2, minInvest: 370,   price: 369.92, yieldOrReturn: "6.8% distribution yield", issuerRating: "AAA",       registered: true,  requiredLesson: "reit",  minTier: "balanced",
       blurb: "Owns Grade-A office parks across Bengaluru, Mumbai, Pune & NCR; pays out rent as quarterly distributions." },
@@ -109,14 +215,11 @@ const NIVESH_DATA = {
       blurb: "Low-cost fund mirroring India's 50 largest listed companies — broad, cheap equity exposure." },
     { id: "p_tbill",    name: "91-Day Treasury Bill",     category: "Treasury Bill",   assetClass: "bond",  riskGrade: "A", liquidity: "High", complexity: 1, minInvest: 10000, price: 1000, yieldOrReturn: "6.9% annualised yield", issuerRating: "Sovereign", registered: true,  requiredLesson: null,    minTier: "conservative",
       blurb: "Ultra-short government paper; parking spot for idle cash, effectively zero credit risk." },
-    // --- unregistered scam: never passes suitability ----------------------
     { id: "p_scam",     name: "QuickRich Agro Gold Scheme", category: "Unregistered Scheme", assetClass: "scam", riskGrade: "E", liquidity: "Low", complexity: 3, minInvest: 25000, price: 25000, yieldOrReturn: "24% assured returns", issuerRating: "Unrated", registered: false, requiredLesson: null, minTier: "aggressive",
       blurb: "\"Guaranteed 24% assured returns\" from an unregistered agro-gold pool. Not found in any SEBI/exchange registry — classic red flag." }
   ],
 
-  /* 5 education modules, plain-language + analogy-driven, each with a
-     3-question quiz. Passing (>=2/3) marks the lesson complete + unlocks the
-     matching product category via the suitability engine.                   */
+  /* 5 education modules (shared) ------------------------------------------ */
   lessons: [
     { id: "reit", title: "REITs", emoji: "🏢", minutes: 4,
       sections: [
@@ -175,8 +278,7 @@ const NIVESH_DATA = {
       ] }
   ],
 
-  /* 6-question risk-profiling quiz. Sum of chosen option weights →
-     <=10 conservative, 11–17 balanced, >=18 aggressive.                     */
+  /* 6-question risk-profiling quiz (shared) ------------------------------- */
   riskQuiz: [
     { q: "What is your age band?",
       options: [ { t: "Above 55", w: 1 }, { t: "40–55", w: 2 }, { t: "30–40", w: 3 }, { t: "Under 30", w: 4 } ] },
@@ -194,23 +296,57 @@ const NIVESH_DATA = {
 };
 
 /* --------------------------------------------------------------------------
-   Merge the REAL market snapshot (real-quotes.js) over the baked fallbacks.
-   Prices/NAVs become real; quantities, day-moves and names stay curated so
-   the demo narrative and offline mode both stay coherent. No-op if absent.
+   Merge the REAL market snapshot (real-quotes.js) over baked fallbacks — for
+   every user's holdings and the shared product catalogue — then synthesise a
+   deterministic 30-day net-worth history per user ending at their live total.
+   No-op for prices if real-quotes.js is absent (offline fallback stays).
    -------------------------------------------------------------------------- */
-(function applyRealQuotes() {
+(function finalizeData() {
   var RQ = (typeof window !== "undefined") && window.REAL_QUOTES;
-  if (!RQ) return;
-  var quotes = RQ.quotes || {}, navs = RQ.navs || {};
-  (NIVESH_DATA.holdings || []).forEach(function (h) {
-    if (h.schemeCode && navs[h.schemeCode] != null) h.ltp = navs[h.schemeCode].nav;
-    else if (quotes[h.symbol] != null) h.ltp = quotes[h.symbol].ltp;
+  if (RQ) {
+    var quotes = RQ.quotes || {}, navs = RQ.navs || {};
+    NIVESH_DATA.users.forEach(function (u) {
+      (u.holdings || []).forEach(function (h) {
+        if (h.schemeCode && navs[h.schemeCode] != null) h.ltp = navs[h.schemeCode].nav;
+        else if (quotes[h.symbol] != null) h.ltp = quotes[h.symbol].ltp;
+      });
+    });
+    (NIVESH_DATA.products || []).forEach(function (p) {
+      if (p.schemeCode && navs[p.schemeCode] != null) p.price = navs[p.schemeCode].nav;
+      else if (p.quoteSym && quotes[p.quoteSym] != null) p.price = quotes[p.quoteSym].ltp;
+    });
+    NIVESH_DATA.dataSource = { asOf: RQ.asOf, sources: RQ.sources || [], live: true };
+  } else {
+    NIVESH_DATA.dataSource = { asOf: "baked snapshot", sources: [], live: false };
+  }
+
+  // deterministic seeded RNG so a user's chart is stable across reloads
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function genHistory(end, seedStr) {
+    var seed = 0;
+    for (var i = 0; i < seedStr.length; i++) seed = (seed * 31 + seedStr.charCodeAt(i)) | 0;
+    var rnd = mulberry32(seed);
+    var n = NIVESH_DATES.length;
+    var drift = 0.02 + rnd() * 0.05;            // +2%..+7% over the window
+    var start = end / (1 + drift);
+    return NIVESH_DATES.map(function (t, i) {
+      if (i === n - 1) return { t: t, v: Math.round(end) };
+      var base = start + (end - start) * (i / (n - 1));
+      var wobble = (rnd() - 0.5) * 0.012 * base; // ±0.6% daily noise
+      return { t: t, v: Math.round(base + wobble) };
+    });
+  }
+  NIVESH_DATA.users.forEach(function (u) {
+    var nw = (u.holdings || []).reduce(function (s, h) { return s + (h.qty || 0) * (h.ltp || 0); }, 0);
+    u.history = genHistory(nw, u.id);
   });
-  (NIVESH_DATA.products || []).forEach(function (p) {
-    if (p.schemeCode && navs[p.schemeCode] != null) p.price = navs[p.schemeCode].nav;
-    else if (p.quoteSym && quotes[p.quoteSym] != null) p.price = quotes[p.quoteSym].ltp;
-  });
-  NIVESH_DATA.dataSource = { asOf: RQ.asOf, sources: RQ.sources || [], live: true };
 })();
 
 /* expose for other scripts / debugging */

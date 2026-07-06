@@ -35,8 +35,12 @@
   var SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
   function sv(i) { return "var(" + SERIES[i % SERIES.length] + ")"; }
 
-  /* ------------------------------------------------------------- state */
-  var LS = "niveshos.";
+  /* ------------------------------------------------------------- state
+     Persistence is namespaced per signed-in user: niveshos.u.<id>.<key>.
+     `theme` is global; the active session id lives under niveshos.session.  */
+  var SESSION_KEY = "niveshos.session";
+  var THEME_KEY = "niveshos.theme";
+  var activeUserId = null;
   var state = {
     onboarded: false,
     theme: "dark",
@@ -49,19 +53,78 @@
   };
   var _rendered = false;
 
+  function uk(k) { return "niveshos.u." + activeUserId + "." + k; }
+  function loadTheme() {
+    try { var r = localStorage.getItem(THEME_KEY); if (r != null) state.theme = JSON.parse(r); }
+    catch (e) { /* ignore */ }
+  }
+  function hasSavedState() {
+    try { return activeUserId && localStorage.getItem(uk("onboarded")) != null; }
+    catch (e) { return false; }
+  }
   function loadState() {
+    if (!activeUserId) return;
     try {
       Object.keys(state).forEach(function (k) {
-        var raw = localStorage.getItem(LS + k);
+        if (k === "theme") return;                 // theme is global, not per-user
+        var raw = localStorage.getItem(uk(k));
         if (raw != null) state[k] = JSON.parse(raw);
       });
     } catch (e) { /* file:// private mode etc. — fall back to defaults */ }
   }
   function save(k) {
-    try { localStorage.setItem(LS + k, JSON.stringify(state[k])); }
-    catch (e) { /* ignore persistence failure */ }
+    try {
+      if (k === "theme") { localStorage.setItem(THEME_KEY, JSON.stringify(state.theme)); return; }
+      if (!activeUserId) return;
+      localStorage.setItem(uk(k), JSON.stringify(state[k]));
+    } catch (e) { /* ignore persistence failure */ }
   }
   function saveAll() { Object.keys(state).forEach(save); }
+
+  /* ------------------------------------------------------ users / session */
+  function userById(id) {
+    return (D.users || []).filter(function (u) { return u.id === id; })[0] || null;
+  }
+  function getSession() {
+    try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+  }
+  function setSession(id) { try { localStorage.setItem(SESSION_KEY, JSON.stringify(id)); } catch (e) { } }
+  function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch (e) { } }
+
+  function setActiveUser(id) {
+    activeUserId = id;
+    var u = userById(id);
+    if (!u) return;
+    // point the live data view at this user's portfolio
+    D.investor = { name: u.name, pan: u.pan, riskProfile: null };
+    D.accounts = u.accounts || [];
+    D.holdings = u.holdings || [];
+    D.history = u.history || [];
+    // reflect identity in the sidebar chip
+    var nm = $("investor-name"); if (nm) nm.textContent = u.name;
+    var pan = $("investor-pan"); if (pan) pan.textContent = u.pan;
+    var av = $("investor-avatar"); if (av) av.textContent = u.avatar || "";
+  }
+
+  // First sign-in for a user: seed their state from the persona so their
+  // portfolio, risk profile and consent ledger are coherent immediately.
+  function seedUserState(u) {
+    var s = u.seed || {};
+    state.completedLessons = (s.completedLessons || []).slice();
+    state.riskProfile = s.riskProfile || null;
+    state.riskScore = s.riskScore != null ? s.riskScore : null;
+    state.purchases = [];
+    state.consents = [];
+    state.auditTrail = [];
+    if (s.onboarded) {
+      state.onboarded = true;
+      grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
+      audit("onboard", "Signed in — portfolio consolidated across " + (D.accounts || []).length + " linked sources.");
+    } else {
+      state.onboarded = false;
+    }
+    saveAll();
+  }
 
   /* ------------------------------------------------------- audit + consent */
   function audit(kind, text) {
@@ -1109,6 +1172,8 @@
     if (tt) tt.addEventListener("click", function () {
       state.theme = state.theme === "light" ? "dark" : "light"; save("theme"); applyTheme();
     });
+    var lo = $("logout-btn");
+    if (lo) lo.addEventListener("click", logout);
     // delegated: "open the X lesson" links inside chat bubbles or modals
     document.addEventListener("click", function (e) {
       var a = e.target && e.target.closest ? e.target.closest("[data-lesson-link]") : null;
@@ -1205,22 +1270,104 @@
       window.dispatchEvent(new CustomEvent("niveshos:rendered", {}));
     }
   }
+  /* ============================================================ LOGIN */
+  function showLogin() {
+    var ov = $("login-overlay");
+    if (!ov) return;
+    var cards = (D.users || []).map(function (u) {
+      return '<button type="button" class="login-user" data-user="' + esc(u.id) + '">' +
+        '<span class="login-user-av">' + esc(u.avatar || "") + "</span>" +
+        '<span class="login-user-info"><span class="login-user-name">' + esc(u.name) + "</span>" +
+        '<span class="login-user-persona">' + esc(u.persona || "") + "</span>" +
+        '<span class="login-user-creds">' + esc(u.username) + " · " + esc(u.password) + "</span></span></button>";
+    }).join("");
+    ov.innerHTML =
+      '<div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">' +
+        '<div class="login-brand">' +
+          '<svg viewBox="0 0 32 32" width="40" height="40" aria-hidden="true">' +
+            '<path d="M16 10 L7 21 M16 10 L25 21 M7 23 L25 23" stroke="var(--hairline)" stroke-width="1.5" fill="none"/>' +
+            '<circle cx="16" cy="7" r="3.2" fill="var(--accent)"/><circle cx="7" cy="23" r="3.2" fill="var(--s2)"/>' +
+            '<circle cx="25" cy="23" r="3.2" fill="var(--s5)"/><circle cx="16" cy="16" r="3.6" fill="var(--ink)"/></svg>' +
+          '<div><h2 id="login-title" style="margin:0;">Sign in to NiveshOS</h2>' +
+          '<p style="margin:2px 0 0;font-size:12px;color:var(--ink-muted);">Local demo login — runs entirely in your browser, no server.</p></div>' +
+        "</div>" +
+        '<form id="login-form" class="login-form" autocomplete="off">' +
+          '<label class="login-field"><span>Username</span><input id="login-username" type="text" autocomplete="username" placeholder="e.g. priya"></label>' +
+          '<label class="login-field"><span>Password</span><input id="login-password" type="password" autocomplete="current-password" placeholder="••••••••"></label>' +
+          '<p id="login-error" class="login-error" hidden></p>' +
+          '<button type="submit" class="btn btn-primary login-submit">Sign in</button>' +
+        "</form>" +
+        '<div class="login-divider"><span>or pick a demo profile</span></div>' +
+        '<div class="login-users">' + cards + "</div>" +
+      "</div>";
+    ov.hidden = false;
+
+    var form = $("login-form");
+    if (form) form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      attemptLogin(($("login-username") || {}).value, ($("login-password") || {}).value);
+    });
+    Array.prototype.forEach.call(ov.querySelectorAll(".login-user"), function (b) {
+      b.addEventListener("click", function () {
+        var u = userById(b.getAttribute("data-user"));
+        if (!u) return;
+        var un = $("login-username"), pw = $("login-password");
+        if (un) un.value = u.username;
+        if (pw) pw.value = u.password;
+        attemptLogin(u.username, u.password);
+      });
+    });
+  }
+  function attemptLogin(username, password) {
+    var u = (D.users || []).filter(function (x) {
+      return x.username === String(username || "").trim() && x.password === String(password || "");
+    })[0];
+    var err = $("login-error");
+    if (!u) {
+      if (err) { err.textContent = "Incorrect username or password."; err.hidden = false; }
+      return;
+    }
+    setSession(u.id);
+    enterApp(u.id, false);
+  }
+  function hideLogin() { var ov = $("login-overlay"); if (ov) ov.hidden = true; }
+
+  function enterApp(id, forceOnboarded) {
+    setActiveUser(id);
+    var u = userById(id);
+    if (hasSavedState()) loadState();
+    else seedUserState(u);
+    if (forceOnboarded && !state.onboarded) {
+      state.onboarded = true;
+      grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
+      saveAll();
+    }
+    hideLogin();
+    if (state.onboarded) {
+      var ob = $("onboarding"); if (ob) ob.hidden = true;
+      finishBoot();
+    } else {
+      initOnboarding();
+    }
+    var p = new URLSearchParams(window.location.search).get("panel");
+    if (p) switchPanel(p);
+  }
+  function logout() {
+    clearSession();
+    window.location.reload();
+  }
+
   function boot() {
-    loadState();
+    loadTheme();
     applyTheme();
     wireChrome();
     var params = new URLSearchParams(window.location.search);
-    if (params.get("demo") === "1" && !state.onboarded) {
-      grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
-      completeOnboarding($("onboarding"));
-      var p = params.get("panel"); if (p) switchPanel(p);
-      return;
-    }
-    if (!state.onboarded) initOnboarding();
-    else {
-      var ob = $("onboarding"); if (ob) ob.hidden = true; finishBoot();
-      var p2 = params.get("panel"); if (p2) switchPanel(p2);
-    }
+    var forced = params.get("user");
+    if (params.get("demo") === "1") { setSession("priya"); enterApp("priya", true); return; }
+    if (forced && userById(forced)) { setSession(forced); enterApp(forced, true); return; }
+    var sess = getSession();
+    if (sess && userById(sess)) { enterApp(sess, false); return; }
+    showLogin();
   }
 
   // expose for anim.js / debug

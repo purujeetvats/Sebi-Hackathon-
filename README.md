@@ -2,7 +2,19 @@
 
 ## Prototype: NiveshOS — "Every asset. One brain."
 
-A zero-cost working prototype lives in this folder. **To run: double-click `index.html`** (opens in any browser, no server or installs needed). First run shows a simulated Account Aggregator consent flow; use `index.html?demo=1` to skip straight to the dashboard. Reset the demo by clearing the site's localStorage (or use a private window). Architecture and build contract are in `BUILD_SPEC.md`.
+A zero-cost working prototype lives in this folder. **To run: double-click `index.html`** (opens in any browser, no server or installs needed). It opens on a **local login screen** — pick any of the six demo profiles (credentials shown on the card) or type them in. `index.html?demo=1` auto-signs-in as Priya and skips to the dashboard; `index.html?user=<id>` auto-signs-in as a specific profile. Reset by clearing the site's localStorage (or use a private window). Architecture and build contract are in `BUILD_SPEC.md`.
+
+### Local login & demo users
+The login is **local-only** (client-side, no backend, no network auth) — it exists to demo per-user portfolios, not to secure anything; credentials live in `data.js` and are trivially bypassable. Each user has a **distinct, internally-consistent portfolio**, and all state (onboarding, risk profile, purchases, consent ledger, audit trail) is namespaced per user in localStorage. Sign out from the sidebar.
+
+| User | Login | Persona | Net worth |
+|---|---|---|---|
+| Priya Sharma | `priya` / `priya123` | Balanced saver, bank-heavy (concentration + overlap alerts) | ~₹8.1L |
+| Rajesh Kumar | `rajesh` / `rajesh123` | Conservative retiree — bonds, SGB, gold, index fund | ~₹3.9L |
+| Ananya Iyer | `ananya` / `ananya123` | First-job investor — aggressive, tech-concentrated | ~₹0.9L |
+| Mohammed Farhan | `farhan` / `farhan123` | Income investor — REITs, InvITs & bonds | ~₹3.2L |
+| Sunita Devi | `sunita` / `sunita123` | Beginner — one index fund + cash, unprofiled | ~₹0.3L |
+| Vikram Reddy | `vikram` / `vikram123` | HNI — large book across every asset class | ~₹15.6L |
 
 Files: `index.html` + `styles.css` + `anim.js` (UI, GSAP animations) · `data.js` + `app.js` (portfolio data, charts, suitability engine, rule-based copilot) · `real-quotes.js` + `tools/build-real-data.mjs` (real market snapshot from open data) · `vendor/` (GSAP, vendored — works offline).
 
