@@ -4,7 +4,19 @@
 
 A zero-cost working prototype lives in this folder. **To run: double-click `index.html`** (opens in any browser, no server or installs needed). First run shows a simulated Account Aggregator consent flow; use `index.html?demo=1` to skip straight to the dashboard. Reset the demo by clearing the site's localStorage (or use a private window). Architecture and build contract are in `BUILD_SPEC.md`.
 
-Files: `index.html` + `styles.css` + `anim.js` (UI, GSAP animations) · `data.js` + `app.js` (mock AA/depository data, charts, suitability engine, rule-based copilot) · `vendor/` (GSAP, vendored — works offline).
+Files: `index.html` + `styles.css` + `anim.js` (UI, GSAP animations) · `data.js` + `app.js` (portfolio data, charts, suitability engine, rule-based copilot) · `real-quotes.js` + `tools/build-real-data.mjs` (real market snapshot from open data) · `vendor/` (GSAP, vendored — works offline).
+
+## Real, open-source market data
+
+The instruments are all real, SEBI-registered, exchange-listed securities, and their prices/NAVs come from free, open sources — no paid API, no key:
+
+- **Equity / REIT / InvIT / gold-ETF prices** — Yahoo Finance chart API (`query1.finance.yahoo.com`), real NSE last-traded prices. Fetched at build time (Yahoo blocks browser CORS), so these are a dated snapshot.
+- **Mutual-fund & index NAVs** — AMFI (Association of Mutual Funds in India), the official daily NAV source, via `api.mfapi.in` — a free JSON wrapper that is **CORS-enabled**, so the app also refreshes these **live in the browser** (the "↻ Refresh NAVs" button on the dashboard).
+- **Live market chart** — a free **TradingView** Advanced-Chart widget embedded on the dashboard, real-time and interactive, switchable across every equity/ETF holding (NSE symbols). It's TradingView's own widget (loads from their CDN, needs internet, carries their required attribution) and is deliberately separate from the portfolio engine — the dated equity snapshot still drives the analytics.
+
+**How it works:** `node tools/build-real-data.mjs` pulls a fresh snapshot into `real-quotes.js` (`window.REAL_QUOTES`), which `data.js` merges over its baked fallbacks at load. Prices/NAVs become real; the demo investor's holdings, quantities and day-moves stay curated so the concentration story (HDFC Bank ~21% top issuer, Financials ~40% of market value) and offline mode both remain coherent. If `real-quotes.js` is missing, the app falls back to the last baked snapshot and still runs fully offline — zero external cost preserved.
+
+Real instruments in the demo: HDFC Bank, ICICI Bank, Reliance, TCS, Infosys, Tata Motors PV, Bharti Airtel, Nippon India Gold ETF (NSE); Axis Large Cap, Mirae Asset Large Cap, UTI Nifty 50 Index (AMFI); Embassy & Mindspace REITs, PowerGrid & IndiGrid InvITs.
 
 ## Problem
 

@@ -698,6 +698,39 @@ svg .anim-bar, svg .anim-line, svg .anim-donut { transform-box: fill-box; transf
 }
 .hidden { display: none !important; }
 
+/* ---- real-data provenance strip --------------------------------------------------------------------- */
+.data-source-strip {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; margin-bottom: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-ctrl);
+  font-size: 12px; color: var(--ink-2);
+}
+.data-source-strip .ds-dot { font-size: 10px; line-height: 1; }
+.data-source-strip .ds-label { font-weight: 600; color: var(--ink); }
+.data-source-strip .ds-meta { color: var(--ink-muted); }
+.data-source-strip .ds-refresh {
+  margin-left: auto; font-size: 12px; padding: 4px 10px;
+  border-radius: var(--radius-ctrl); white-space: nowrap;
+}
+.data-source-strip .ds-refresh:disabled { opacity: 0.6; cursor: default; }
+
+/* ---- live TradingView chart card -------------------------------------------------------------------- */
+#tv-chart-card { display: flex; flex-direction: column; gap: 12px; }
+.tv-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.tv-select {
+  background: var(--surface-2); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: var(--radius-ctrl);
+  padding: 7px 10px; font-size: 13px; max-width: 260px;
+}
+.tv-widget { height: 420px; width: 100%; }
+.tv-widget .tradingview-widget-container,
+.tv-widget .tradingview-widget-container__widget { height: 100%; width: 100%; }
+.tv-widget .tradingview-widget-copyright { font-size: 11px; line-height: 2; text-align: right; }
+.tv-widget .tradingview-widget-copyright a { color: var(--ink-muted); text-decoration: none; }
+.tv-widget .tradingview-widget-copyright a:hover { color: var(--accent); }
+
 /* ---- reduced motion ----------------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -442,12 +442,150 @@
   }
 
   function renderDashboard() {
+    renderDataSource();
     renderKPIs();
     renderDonut($("alloc-donut"));
     renderLine($("value-line"));
+    renderTradingView();
     renderAccountsStrip();
     renderHoldingsTable();
     renderAlerts();
+  }
+
+  /* --- live TradingView chart (external, real-time; needs internet) ----- */
+  var _tvBuilt = false;
+  function renderTradingView() {
+    var card = $("tv-chart-card");
+    if (!card || _tvBuilt) return;
+    // only market-chartable holdings (equity + gold ETF), deduped by symbol
+    var seen = {}, opts = [];
+    (D.holdings || []).forEach(function (h) {
+      if ((h.assetClass === "equity" || h.assetClass === "etf") && !seen[h.symbol]) {
+        seen[h.symbol] = 1;
+        opts.push({ sym: "NSE:" + h.symbol, name: h.name });
+      }
+    });
+    if (!opts.length) return;
+    var sel = '<select id="tv-symbol" class="tv-select" aria-label="Chart symbol">' +
+      opts.map(function (o, i) {
+        return '<option value="' + esc(o.sym) + '"' + (i === 0 ? " selected" : "") + '>' +
+          esc(o.name) + " · " + esc(o.sym) + "</option>";
+      }).join("") + "</select>";
+    card.innerHTML =
+      '<div class="tv-head"><div>' +
+        '<h3 style="margin:0;">Live market chart</h3>' +
+        '<p style="margin:2px 0 0;font-size:12px;color:var(--ink-muted);">Real-time &amp; interactive — embedded from TradingView (external, needs internet). Separate from the dated equity snapshot above.</p>' +
+      "</div>" + sel + "</div>" +
+      '<div id="tv-widget" class="tv-widget"></div>';
+    var s = $("tv-symbol");
+    if (s) s.addEventListener("change", function () { loadTVWidget(this.value); });
+    _tvBuilt = true;
+    loadTVWidget(opts[0].sym);
+  }
+  function loadTVWidget(tvSymbol) {
+    var host = $("tv-widget");
+    if (!host) return;
+    host.innerHTML = "";
+    var theme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    var wrap = el("div", "tradingview-widget-container");
+    wrap.appendChild(el("div", "tradingview-widget-container__widget"));
+    // TradingView free-widget terms require the attribution link — keep it.
+    var copy = el("div", "tradingview-widget-copyright");
+    copy.innerHTML = '<a href="https://www.tradingview.com/symbols/' +
+      esc(tvSymbol.replace(":", "-")) + '/" rel="noopener nofollow" target="_blank">' +
+      '<span class="blue-text">Track all markets on TradingView</span></a>';
+    wrap.appendChild(copy);
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.async = true;
+    script.textContent = JSON.stringify({
+      autosize: true,
+      symbol: tvSymbol,
+      interval: "D",
+      timezone: "Asia/Kolkata",
+      theme: theme,
+      style: "1",
+      locale: "en",
+      hide_side_toolbar: true,
+      allow_symbol_change: true,
+      support_host: "https://www.tradingview.com"
+    });
+    wrap.appendChild(script);
+    host.appendChild(wrap);
+  }
+
+  /* --- real-data provenance strip + live NAV refresh ------------------- */
+  var _refreshing = false;
+  function renderDataSource() {
+    var body = document.querySelector("#panel-dashboard .panel-body");
+    if (!body) return;
+    var ds = D.dataSource;
+    var strip = $("data-source-strip");
+    if (!strip) {
+      strip = el("div", "data-source-strip");
+      strip.id = "data-source-strip";
+      body.insertBefore(strip, body.firstChild);
+    }
+    var live = ds && ds.live;
+    var asOf = ds && ds.asOf ? ds.asOf : "baked snapshot";
+    strip.innerHTML =
+      '<span class="ds-dot" style="color:' + (live ? "var(--good)" : "var(--ink-muted)") + ';">●</span> ' +
+      '<span class="ds-label">' + (live ? "Real market data" : "Offline snapshot") + '</span>' +
+      '<span class="ds-meta">Prices: NSE via Yahoo Finance · NAVs: AMFI (mfapi.in) · as of ' + esc(asOf) + '</span>' +
+      '<button id="refresh-navs" class="btn-ghost ds-refresh" type="button" title="Fetch the latest mutual-fund NAVs live from AMFI">↻ Refresh NAVs</button>';
+    var btn = $("refresh-navs");
+    if (btn) btn.addEventListener("click", refreshLiveNavs);
+  }
+
+  function refreshLiveNavs() {
+    if (_refreshing) return;
+    if (typeof fetch !== "function") { toast("Live refresh needs a modern browser.", "warn"); return; }
+    _refreshing = true;
+    var btn = $("refresh-navs");
+    if (btn) { btn.disabled = true; btn.textContent = "↻ Refreshing…"; }
+    // every AMFI-coded instrument we hold or list (funds + index fund)
+    var codes = {};
+    (D.holdings || []).forEach(function (h) { if (h.schemeCode) codes[h.schemeCode] = 1; });
+    (D.products || []).forEach(function (p) { if (p.schemeCode) codes[p.schemeCode] = 1; });
+    var list = Object.keys(codes);
+    var pending = list.length, updated = 0, latestDate = null;
+    if (!pending) { finishRefresh(btn, 0, null); return; }
+    list.forEach(function (code) {
+      fetch("https://api.mfapi.in/mf/" + code + "/latest")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var d = j && j.data && j.data[0];
+          if (d && d.nav != null) {
+            var nav = Math.round(parseFloat(d.nav) * 100) / 100;
+            (D.holdings || []).forEach(function (h) { if (String(h.schemeCode) === code) h.ltp = nav; });
+            (D.products || []).forEach(function (p) { if (String(p.schemeCode) === code) p.price = nav; });
+            latestDate = d.date || latestDate;
+            updated++;
+          }
+        })
+        .catch(function () { /* offline / blocked — keep snapshot value */ })
+        .then(function () { if (--pending === 0) finishRefresh(btn, updated, latestDate); });
+    });
+  }
+  function finishRefresh(btn, updated, date) {
+    _refreshing = false;
+    if (btn) { btn.disabled = false; btn.textContent = "↻ Refresh NAVs"; }
+    if (updated > 0) {
+      if (D.dataSource) { D.dataSource.live = true; if (date) D.dataSource.asOf = isoDate(date); }
+      audit("data", "Live NAV refresh from AMFI (mfapi.in): " + updated + " scheme(s) updated.");
+      renderDashboard();
+      if (isActive("analytics")) renderAnalytics();
+      if (isActive("invest")) renderInvest();
+      toast("Live NAVs updated from AMFI — " + updated + " scheme(s).", "success");
+    } else {
+      toast("Could not reach AMFI feed — showing last snapshot.", "warn");
+    }
+  }
+  function isoDate(dmy) {
+    // mfapi returns dd-mm-yyyy → yyyy-mm-dd
+    var m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(dmy || "");
+    return m ? m[3] + "-" + m[2] + "-" + m[1] : dmy;
   }
 
   function renderAnalytics() {
