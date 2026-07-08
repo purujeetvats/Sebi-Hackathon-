@@ -521,11 +521,13 @@
     var card = $("tv-chart-card");
     if (!card || _tvBuilt) return;
     // only market-chartable holdings (equity + gold ETF), deduped by symbol
+    // BSE feed: TradingView's free widget serves BSE real-time; NSE needs a
+    // paid plan and pops "only available on TradingView" instead of a chart.
     var seen = {}, opts = [];
     (D.holdings || []).forEach(function (h) {
       if ((h.assetClass === "equity" || h.assetClass === "etf") && !seen[h.symbol]) {
         seen[h.symbol] = 1;
-        opts.push({ sym: "NSE:" + h.symbol, name: h.name });
+        opts.push({ sym: "BSE:" + h.symbol, name: h.name });
       }
     });
     if (!opts.length) return;
