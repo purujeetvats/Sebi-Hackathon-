@@ -163,6 +163,8 @@
   var ASSET_ORDER = [
     { key: "equity", label: "Equity" },
     { key: "mf", label: "Mutual Funds" },
+    { key: "reit", label: "REITs" },
+    { key: "invit", label: "InvITs" },
     { key: "bond", label: "Bonds" },
     { key: "etf", label: "Gold ETF" },
     { key: "cash", label: "Cash" }
@@ -212,6 +214,65 @@
     var overlapPct = Math.round(common.length / a.underlying.length * 100);
     return { a: a, b: b, common: common, pct: overlapPct };
   }
+  /* ---- portfolio health: 5 weighted factors, 100 points, all computed ---- */
+  function scoreBand(x, best, worst, max) {
+    if (x <= best) return max;
+    if (x >= worst) return 0;
+    return Math.round(max * (worst - x) / (worst - best));
+  }
+  function healthReport() {
+    // "Diversified" is fund-level exposure spread across many sectors — not a
+    // concentrated bet, so it can't be the top sector for scoring purposes.
+    var topSec = sectorExposure().filter(function (s) { return s.sector !== "Diversified"; })[0]
+      || { sector: null, pct: 0 };
+    var ti = topIssuer();
+    var ov = mfOverlap();
+    var nw = netWorth(), cashPct = nw ? idleCash() / nw * 100 : 0;
+    var classes = assetAlloc().filter(function (a) { return a.key !== "cash" && a.pct >= 5; }).length;
+    var factors = [
+      { label: "Sector balance", pts: scoreBand(topSec.pct, 25, 45, 25), max: 25, link: "analytics",
+        note: topSec.sector ? "Top sector (" + topSec.sector + ") is " + topSec.pct.toFixed(1) + "% — comfort band is ≤25%."
+                            : "No concentrated sector bets — exposure is via diversified funds." },
+      { label: "Asset-class spread", pts: [0, 4, 10, 18, 25][Math.min(classes, 4)], max: 25, link: "invest",
+        note: classes + " asset class" + (classes === 1 ? "" : "es") + " above 5% weight — 4+ earns full marks." },
+      { label: "Single-issuer risk", pts: scoreBand(ti.pct, 10, 25, 20), max: 20, link: "analytics",
+        note: esc(ti.name) + " alone is " + ti.pct.toFixed(1) + "% of market value." },
+      { label: "Fund overlap", pts: ov ? scoreBand(ov.pct, 40, 100, 15) : 15, max: 15, link: "analytics",
+        note: ov ? "Your two funds overlap ~" + ov.pct + "% — same bets twice." : "No duplicated look-through funds." },
+      { label: "Idle cash", pts: scoreBand(cashPct, 5, 18, 15), max: 15, link: "copilot",
+        note: fmt(idleCash()) + " (" + cashPct.toFixed(1) + "%) earning ~0%." }
+    ];
+    var score = factors.reduce(function (s, f) { return s + f.pts; }, 0);
+    var grade = score >= 80 ? { label: "Strong", status: "good" }
+      : score >= 60 ? { label: "Fair", status: "warn" }
+        : { label: "Needs attention", status: "serious" };
+    return { score: score, grade: grade, factors: factors };
+  }
+  function renderHealth() {
+    var host = $("health-card"); if (!host) return;
+    var h = healthReport();
+    var rows = h.factors.map(function (f) {
+      var ratio = f.pts / f.max;
+      var col = ratio >= 0.8 ? "var(--good)" : ratio >= 0.5 ? "var(--warn)" : "var(--serious)";
+      return '<div class="health-row" data-link="' + f.link + '" role="button" tabindex="0">' +
+        '<div class="health-row-head"><span>' + f.label + '</span>' +
+        '<b style="color:' + col + ';">' + f.pts + " / " + f.max + "</b></div>" +
+        '<div class="health-track"><span style="width:' + (ratio * 100).toFixed(0) + '%;background:' + col + ';"></span></div>' +
+        '<div class="health-note">' + f.note + "</div></div>";
+    }).join("");
+    host.innerHTML = '<div class="health-grid">' +
+      '<div class="health-score">' +
+        '<div class="health-score-num" style="color:var(--' + (h.grade.status === "good" ? "good" : h.grade.status === "warn" ? "warn" : "serious") + ');">' + h.score + "</div>" +
+        '<div class="health-score-den">/ 100</div>' +
+        '<div class="badge-' + h.grade.status + '" style="font-size:13px;font-weight:700;">' + h.grade.label + "</div>" +
+        '<p class="health-caption">Five live-computed factors. Click one to see where to act.</p>' +
+      "</div>" +
+      '<div class="health-rows"><h3 style="margin:0 0 10px;">Portfolio health</h3>' + rows + "</div></div>";
+    Array.prototype.forEach.call(host.querySelectorAll("[data-link]"), function (n) {
+      n.addEventListener("click", function () { switchPanel(n.getAttribute("data-link")); });
+    });
+  }
+
   function riskiestHolding() {
     // largest single-day adverse move among market holdings
     var arr = marketHoldings().slice().sort(function (x, y) { return (x.dayChangePct || 0) - (y.dayChangePct || 0); });
@@ -654,6 +715,7 @@
   }
 
   function renderAnalytics() {
+    renderHealth();
     renderSectorBars($("sector-bars"));
     // concentration card
     var cc = $("concentration-card");
@@ -703,7 +765,49 @@
   function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
   /* -------------------------------------------------------------- learn */
+  function renderLearnProgress() {
+    var host = $("learn-progress"); if (!host) return;
+    var lessons = D.lessons || [];
+    var done = lessons.filter(function (l) { return state.completedLessons.indexOf(l.id) >= 0; });
+    var next = lessons.filter(function (l) { return state.completedLessons.indexOf(l.id) < 0; })[0];
+    var unlocked = (D.products || []).filter(function (p) {
+      return p.registered && p.requiredLesson && state.completedLessons.indexOf(p.requiredLesson) >= 0;
+    }).length;
+    var pctDone = lessons.length ? done.length / lessons.length * 100 : 0;
+    host.innerHTML =
+      '<div class="learn-progress-head"><div><h3 style="margin:0;">Your learning path</h3>' +
+      '<p style="margin:2px 0 0;font-size:12.5px;color:var(--ink-muted);">Each completed lesson unlocks its product category in Invest.</p></div>' +
+      '<b style="font-variant-numeric:tabular-nums;">' + done.length + " / " + lessons.length + "</b></div>" +
+      '<div class="health-track" style="margin:10px 0 8px;"><span style="width:' + pctDone.toFixed(0) + '%;background:var(--accent);"></span></div>' +
+      '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:12.5px;color:var(--ink-2);">' +
+      "<span>" + unlocked + " product" + (unlocked === 1 ? "" : "s") + " unlocked so far</span>" +
+      (next ? '<a href="#" data-lesson-link="' + next.id + '" style="color:var(--accent);">Next: ' + esc(next.title) + " (" + next.minutes + " min) →</a>"
+            : '<span style="color:var(--good);">✓ All lessons complete</span>') + "</div>";
+  }
+  function renderGlossary() {
+    var host = $("glossary-card"); if (!host) return;
+    var terms = D.glossary || [];
+    if (!terms.length) { host.innerHTML = ""; return; }
+    host.innerHTML = '<h3 style="margin:0 0 4px;">Jargon buster</h3>' +
+      '<p style="margin:0 0 10px;font-size:12.5px;color:var(--ink-muted);">' + terms.length + ' terms, in plain language. The copilot answers these too — try “what is NAV?”.</p>' +
+      '<input id="glossary-search" class="chat-input" type="search" placeholder="Search a term — NAV, NCD, drawdown…" aria-label="Search glossary" style="width:100%;margin-bottom:10px;">' +
+      '<div id="glossary-list"></div>';
+    var list = $("glossary-list"), input = $("glossary-search");
+    function paint(filter) {
+      var f = (filter || "").toLowerCase();
+      var hits = terms.filter(function (t) {
+        return !f || t.term.toLowerCase().indexOf(f) >= 0 || t.def.toLowerCase().indexOf(f) >= 0;
+      });
+      list.innerHTML = hits.length ? hits.map(function (t) {
+        return '<div class="glossary-row"><b>' + esc(t.term) + "</b><p>" + esc(t.def) + "</p></div>";
+      }).join("") : '<p style="color:var(--ink-muted);font-size:13px;">No match — ask the copilot instead.</p>';
+    }
+    paint("");
+    if (input) input.addEventListener("input", function () { paint(input.value); });
+  }
   function renderLearn() {
+    renderLearnProgress();
+    renderGlossary();
     var host = $("lesson-grid"); if (!host) return;
     host.innerHTML = (D.lessons || []).map(function (l) {
       var done = state.completedLessons.indexOf(l.id) >= 0;
@@ -968,6 +1072,7 @@
 
   /* -------------------------------------------------------------- copilot */
   var SUGGEST_CHIPS = [
+    "How healthy is my portfolio?",
     "Why is my portfolio down today?",
     "Am I overexposed anywhere?",
     "Explain REITs simply",
@@ -998,7 +1103,8 @@
     var log = $("chat-log");
     if (log && !log._greeted) {
       log._greeted = true;
-      addMsg("assistant", "<b>Namaste, Priya.</b> I read your live portfolio. Ask me why you're down today, where you're overexposed, what to do with idle cash, or to explain any instrument. Try a chip below." + ADVICE_NOTE);
+      var firstName = ((D.investor && D.investor.name) || "there").split(" ")[0];
+      addMsg("assistant", "<b>Namaste, " + esc(firstName) + ".</b> I read your live portfolio. Ask me why you're down today, where you're overexposed, how healthy your portfolio is, or to explain any instrument. Try a chip below." + ADVICE_NOTE);
     }
   }
   function addMsg(who, html) {
@@ -1047,6 +1153,13 @@
       ans = state.riskProfile
         ? "<b>With your " + cap(state.riskProfile) + " profile</b>, these pass every suitability gate:<ul style=\"margin:6px 0;padding-left:18px;\">" + (sp2.length ? sp2.map(function (p) { return "<li>" + esc(p.name) + " — " + esc(p.yieldOrReturn) + "</li>"; }).join("") : "<li>Complete a required lesson to unlock products.</li>") + "</ul>Open Discover for the full list."
         : "First take the 6-question <b>risk quiz</b> in Profile — suitability gating needs your tier before I can list what you can buy.";
+    } else if (/health|healthy|score|check.?up|portfolio grade/.test(q)) {
+      var hr = healthReport();
+      var weak = hr.factors.slice().sort(function (a, b) { return a.pts / a.max - b.pts / b.max; }).slice(0, 2);
+      ans = "<b>Portfolio health: " + hr.score + "/100 — " + hr.grade.label + ".</b> Weakest links:" +
+        '<ul style="margin:6px 0;padding-left:18px;">' + weak.map(function (f) {
+          return "<li><b>" + f.label + "</b> (" + f.pts + "/" + f.max + ") — " + f.note + "</li>";
+        }).join("") + "</ul>The full five-factor breakdown is in <b>Analytics</b>.";
     } else if (/how am i doing|portfolio value|net worth|total value|overall/.test(q)) {
       var td = thirtyDay();
       ans = "<b>Net worth: " + fmt(netWorth()) + ".</b> Over 30 days you're " + pct(td.pct) + " (from " + fmt(td.from) + "). Invested cost is " + fmt(invested()) + ", so you're sitting on " + fmtSigned(marketValue() - invested()) + " unrealised, with " + fmt(idleCash()) + " in cash.";
@@ -1059,9 +1172,18 @@
     } else if (/\bsgb\b|gold bond|sovereign gold/.test(q)) {
       ans = explainAns("Sovereign Gold Bonds", "An <b>SGB</b> is RBI-issued, tracks gold, pays 2.5% interest a year, and is tax-free on maturity — gold exposure without lockers or making charges.", "sgb");
     } else {
-      ans = "I can help with your <b>live portfolio</b>. Try:<ul style=\"margin:6px 0;padding-left:18px;\"><li>Why am I down today?</li><li>Am I overexposed anywhere?</li><li>Explain REITs / InvITs / bonds / SGBs</li><li>What should I do with idle cash?</li><li>What can I buy?</li><li>Is the QuickRich scheme safe?</li></ul>";
+      var g = glossaryLookup(q);
+      ans = g || "I can help with your <b>live portfolio</b>. Try:<ul style=\"margin:6px 0;padding-left:18px;\"><li>How healthy is my portfolio?</li><li>Why am I down today?</li><li>Am I overexposed anywhere?</li><li>Explain REITs / InvITs / bonds / SGBs</li><li>What is NAV / NCD / drawdown?</li><li>What should I do with idle cash?</li></ul>";
     }
     return ans + ADVICE_NOTE;
+  }
+  function glossaryLookup(q) {
+    var hit = (D.glossary || []).filter(function (t) {
+      return q.indexOf(t.term.toLowerCase()) >= 0;
+    }).sort(function (a, b) { return b.term.length - a.term.length; })[0];
+    if (!hit) return null;
+    return "<b>" + esc(hit.term) + "</b> — " + esc(hit.def) +
+      '<div style="margin-top:6px;font-size:12px;color:var(--ink-muted);">More terms in the Jargon buster under Learn.</div>';
   }
   function explainAns(name, body, lessonId) {
     var done = state.completedLessons.indexOf(lessonId) >= 0;

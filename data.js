@@ -292,6 +292,27 @@ const NIVESH_DATA = {
       options: [ { t: "Beginner", w: 1 }, { t: "Some basics", w: 2 }, { t: "Fairly confident", w: 3 }, { t: "Experienced", w: 4 } ] },
     { q: "What matters most for this portfolio?",
       options: [ { t: "Protecting capital above all", w: 1 }, { t: "Steady income", w: 2 }, { t: "Balanced growth", w: 3 }, { t: "Maximum long-term growth", w: 4 } ] }
+  ],
+
+  /* Jargon buster — plain-language definitions, searchable in Learn and
+     answerable by the copilot ("what is NAV?").                            */
+  glossary: [
+    { term: "NAV", def: "Net Asset Value — the per-unit price of a mutual fund, published daily by AMFI after markets close. Buy/sell orders execute at NAV, not a live price." },
+    { term: "Demat account", def: "An electronic locker for your securities, held at a depository (NSDL or CDSL). Your broker is the doorway; the depository holds the assets." },
+    { term: "Account Aggregator", def: "An RBI-regulated consent system that lets you share your financial data between institutions — read-only, revocable, and only after you approve each request." },
+    { term: "REIT", def: "Real Estate Investment Trust — owns rent-earning property (offices, malls) and trades on the exchange. Must pay at least 90% of rental income to unitholders." },
+    { term: "InvIT", def: "Infrastructure Investment Trust — the REIT idea for power lines, roads and pipelines. Distributions look high (9–11%) partly because some of it is your own capital coming back." },
+    { term: "NCD", def: "Non-Convertible Debenture — a corporate bond that can't convert to shares. You're the company's lender: fixed coupon, principal at maturity, credit risk in between." },
+    { term: "Coupon", def: "The fixed interest a bond pays, quoted per year on face value. A ₹1,000 bond at 8.1% pays ₹81 a year regardless of the bond's market price." },
+    { term: "Credit rating", def: "An agency's grade of how likely an issuer is to repay: AAA is safest, then AA, A, BBB… A higher coupon on a lower rating is payment for extra default risk." },
+    { term: "SGB", def: "Sovereign Gold Bond — RBI-issued paper that tracks the gold price, pays 2.5% a year on top, and is capital-gains tax-free if held the full 8 years." },
+    { term: "T-Bill", def: "Treasury Bill — government paper maturing in under a year, sold at a discount. Effectively zero credit risk; the parking spot for short-term cash." },
+    { term: "Distribution yield", def: "What a REIT/InvIT pays out yearly as a % of its unit price. Not the same as a guaranteed return — payouts move with rents, traffic and rates." },
+    { term: "Fund overlap", def: "When two funds hold the same underlying stocks. Two large-caps sharing 4 of their top 5 holdings gives you double the same bet, not diversification." },
+    { term: "Concentration risk", def: "Too much of the portfolio in one stock or sector. One shock — a rate hike for banks, a scandal for a stock — moves your whole net worth." },
+    { term: "Drawdown", def: "The fall from a portfolio's peak to its trough. A 50% drawdown needs a 100% gain to recover — which is why avoiding deep falls beats chasing gains." },
+    { term: "LTCG", def: "Long-Term Capital Gains — profit on assets held past a threshold (12 months for listed equity), taxed at a lower rate than short-term gains." },
+    { term: "Suitability", def: "Matching a product's risk and complexity to your profile before you're allowed to buy — the gate that stands between a beginner and a leveraged exotic." }
   ]
 };
 
