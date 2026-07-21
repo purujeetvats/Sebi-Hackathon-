@@ -703,6 +703,7 @@
       renderDashboard();
       if (isActive("analytics")) renderAnalytics();
       if (isActive("invest")) renderInvest();
+      if (isActive("discover")) paintDiscover();
       toast("Live NAVs updated from AMFI — " + updated + " scheme(s).", "success");
     } else {
       toast("Could not reach AMFI feed — showing last snapshot.", "warn");
@@ -996,8 +997,14 @@
     });
   }
 
-  function openProduct(id) {
-    var p = (D.products || []).filter(function (x) { return x.id === id; })[0]; if (!p) return;
+  function openProduct(idOrProduct) {
+    // Accepts a catalogue id (Invest panel) OR a ready product-shaped object
+    // (Discover synthesises these for stocks/MFs/gold that aren't in the
+    // catalogue) so the whole details + suitability + order flow is reused.
+    var p = (idOrProduct && typeof idOrProduct === "object")
+      ? idOrProduct
+      : (D.products || []).filter(function (x) { return x.id === idOrProduct; })[0];
+    if (!p) return;
     var s = suitability(p);
     var action;
     if (s.ok) {
@@ -1059,15 +1066,323 @@
     var sectorMap = { reit: "Real Estate", invit: "Infrastructure", bond: "Financials", mf: "Diversified", etf: "Commodities" };
     var holding = {
       id: "buy_" + Date.now(), accountId: (D.accounts[0] || {}).id,
-      symbol: p.id.replace("p_", "").toUpperCase(), name: p.name,
+      symbol: p.symbol || p.id.replace("p_", "").toUpperCase(), name: p.name,
       assetClass: p.assetClass === "scam" ? "bond" : p.assetClass,
-      sector: sectorMap[p.assetClass] || "Other",
+      sector: p.sector || sectorMap[p.assetClass] || "Other",
       qty: qty, avgPrice: p.price || amt, ltp: p.price || amt, dayChangePct: 0
     };
     state.purchases.push(holding); save("purchases");
     audit("order", "Order confirmed: " + fmt(amt) + " in “" + p.name + "” via " + defaultBroker() + " (" + qty + " units).");
     toast("Order confirmed — " + p.name);
     renderDashboard(); renderAnalytics(); renderInvest();
+    if (isActive("discover")) paintDiscover();
+  }
+
+  /* ============================================================ DISCOVER
+     Investment Discovery Marketplace. Reuses the whole product engine:
+     catalogue `products` carry a real invest flow already; stocks / non-index
+     MFs / gold ETFs are pulled (deduped) from every persona's holdings and
+     wrapped as product-shaped objects so openProduct/suitability/routeOrder
+     work on them unchanged. Prices/NAVs read live from the same D.products /
+     D.holdings the Yahoo + AMFI pipeline populates, so a NAV refresh re-prices
+     these cards too. */
+  var DISCOVER_CATS = [
+    { key: "stocks", label: "Stocks" },
+    { key: "mf", label: "Mutual Funds" },
+    { key: "reits", label: "REITs" },
+    { key: "invits", label: "InvITs" },
+    { key: "gold", label: "Gold ETFs" },
+    { key: "index", label: "Index Funds" },
+    { key: "cbonds", label: "Corporate Bonds" },
+    { key: "gsec", label: "Government Securities" }
+  ];
+  // catalogue product.category → marketplace category key
+  var PRODUCT_CAT = {
+    "REIT": "reits", "InvIT": "invits", "Corporate Bond": "cbonds",
+    "Index Fund": "index", "Sovereign Gold Bond": "gsec", "Treasury Bill": "gsec"
+  };
+  var RISK_LEVELS = ["Low", "Medium", "High", "Very High"];
+  var GRADE_RISK = { A: "Low", B: "Medium", C: "High", D: "High", E: "Very High" };
+  var CLASS_RISK = { equity: "High", mf: "Medium", etf: "Medium" };
+
+  // discover UI state (kept across panel switches, reset on reload/logout)
+  var discSearch = "", discRisk = "all", discCat = "all";
+  var discCompare = {};      // key → instrument, current compare selection
+  var _discIndex = {};       // key → instrument, for the current painted grid
+  var _discLoaded = false;   // show the loading state only on first entry
+
+  function catLabelOf(key) {
+    var c = DISCOVER_CATS.filter(function (x) { return x.key === key; })[0];
+    return c ? c.label : key;
+  }
+  function riskOf(grade, assetClass) {
+    if (grade && GRADE_RISK[grade]) return GRADE_RISK[grade];
+    return CLASS_RISK[assetClass] || "Medium";
+  }
+  function holdingCat(h) {
+    if (h.assetClass === "equity") return "stocks";
+    if (h.assetClass === "etf") return "gold";
+    if (h.assetClass === "mf") {
+      return (String(h.schemeCode) === "120716" || /index|nifty|sensex/i.test(h.name)) ? "index" : "mf";
+    }
+    return null; // bonds / reits / invits are already covered by the catalogue
+  }
+  function holdingDesc(h) {
+    if (h.assetClass === "equity") return (h.sector || "Listed") + " sector · exchange-listed equity share.";
+    if (h.assetClass === "etf") return "Exchange-traded fund backed by physical gold, held in demat.";
+    if (h.assetClass === "mf") return "Diversified " + (h.sector || "equity").toLowerCase() + " mutual fund — priced at daily NAV.";
+    return h.name;
+  }
+  // wrap a holding as a catalogue-shaped product so the invest engine accepts it
+  function synthProduct(h, cat) {
+    return {
+      id: "disc_" + h.symbol, symbol: h.symbol, name: h.name,
+      category: catLabelOf(cat), assetClass: h.assetClass, sector: h.sector,
+      schemeCode: h.schemeCode || null,
+      riskGrade: h.assetClass === "equity" ? "C" : "B",
+      liquidity: "High", complexity: 1,
+      minInvest: Math.max(100, Math.round(h.ltp || 100)),
+      price: h.ltp,
+      yieldOrReturn: h.assetClass === "equity" ? "Market-linked returns"
+        : h.assetClass === "etf" ? "Tracks the gold price" : "Market-linked (daily NAV)",
+      issuerRating: "NA", registered: true, requiredLesson: null, minTier: "conservative",
+      blurb: holdingDesc(h)
+    };
+  }
+  function buildDiscoverUniverse() {
+    var out = [], seen = {}, prodKeys = {};
+    (D.products || []).forEach(function (p) {
+      if (p.schemeCode) prodKeys["sc:" + p.schemeCode] = 1;
+      if (p.quoteSym) prodKeys["sy:" + p.quoteSym] = 1;
+      var cat = PRODUCT_CAT[p.category];
+      if (!cat) return; // unregistered scam / anything unmapped stays out of Discover
+      var k = "p:" + p.id;
+      seen[k] = 1;
+      out.push({
+        key: k, name: p.name, cat: cat, catLabel: catLabelOf(cat),
+        assetClass: p.assetClass, price: p.price, dayChangePct: null,
+        risk: riskOf(p.riskGrade), desc: p.blurb, yield: p.yieldOrReturn, product: p
+      });
+    });
+    (D.users || []).forEach(function (u) {
+      (u.holdings || []).forEach(function (h) {
+        var cat = holdingCat(h);
+        if (!cat) return;
+        if (prodKeys["sc:" + h.schemeCode] || prodKeys["sy:" + h.symbol]) return; // already catalogued
+        var k = "h:" + h.symbol;
+        if (seen[k]) return; // dedupe the same instrument across personas
+        seen[k] = 1;
+        out.push({
+          key: k, name: h.name, cat: cat, catLabel: catLabelOf(cat),
+          assetClass: h.assetClass, price: h.ltp, dayChangePct: h.dayChangePct,
+          risk: riskOf(null, h.assetClass), desc: holdingDesc(h),
+          yield: null, product: synthProduct(h, cat)
+        });
+      });
+    });
+    return out;
+  }
+
+  function matchesDiscover(inst) {
+    if (discCat !== "all" && inst.cat !== discCat) return false;
+    if (discRisk !== "all" && inst.risk !== discRisk) return false;
+    if (discSearch) {
+      var q = discSearch.toLowerCase();
+      if ((inst.name + " " + inst.catLabel + " " + inst.desc).toLowerCase().indexOf(q) < 0) return false;
+    }
+    return true;
+  }
+
+  function renderDiscover() {
+    renderDiscoverToolbar();
+    renderDiscoverCats();
+    renderCompareBar();
+    if (!_discLoaded) {
+      paintDiscoverLoading();
+      _discLoaded = true;
+      setTimeout(paintDiscover, 260); // brief, honest loading state on first open
+    } else {
+      paintDiscover();
+    }
+  }
+
+  function renderDiscoverToolbar() {
+    // Rebuilt only on panel entry (not on each keystroke) so the search field
+    // keeps focus while typing — the input handler repaints the grid alone.
+    var host = $("discover-toolbar"); if (!host) return;
+    host.innerHTML = '<div class="disc-tools">' +
+      '<input id="disc-search" class="chat-input disc-search" type="search" ' +
+        'placeholder="Search instruments — HDFC, Nifty, gold…" aria-label="Search instruments" value="' + esc(discSearch) + '">' +
+      '<label class="disc-risk-filter">Risk ' +
+        '<select id="disc-risk" class="tv-select" aria-label="Filter by risk level">' +
+          '<option value="all"' + (discRisk === "all" ? " selected" : "") + '>All levels</option>' +
+          RISK_LEVELS.map(function (r) {
+            return '<option value="' + r + '"' + (discRisk === r ? " selected" : "") + '>' + r + "</option>";
+          }).join("") +
+        "</select></label></div>";
+    var s = $("disc-search");
+    if (s) s.addEventListener("input", function () { discSearch = s.value; paintDiscover(); });
+    var rf = $("disc-risk");
+    if (rf) rf.addEventListener("change", function () { discRisk = rf.value; paintDiscover(); });
+  }
+
+  function renderDiscoverCats() {
+    var host = $("discover-categories"); if (!host) return;
+    var chips = '<button class="chip category disc-cat' + (discCat === "all" ? " active" : "") +
+      '" data-cat="all" type="button">All</button>';
+    DISCOVER_CATS.forEach(function (c) {
+      chips += '<button class="chip category disc-cat' + (discCat === c.key ? " active" : "") +
+        '" data-cat="' + c.key + '" type="button">' + esc(c.label) + "</button>";
+    });
+    host.innerHTML = chips;
+    Array.prototype.forEach.call(host.querySelectorAll(".disc-cat"), function (b) {
+      b.addEventListener("click", function () {
+        discCat = b.getAttribute("data-cat");
+        renderDiscoverCats(); paintDiscover();
+      });
+    });
+  }
+
+  function paintDiscoverLoading() {
+    var host = $("discover-grid"); if (!host) return;
+    var sk = "";
+    for (var i = 0; i < 6; i++) {
+      sk += '<div class="product-card disc-skel" aria-hidden="true">' +
+        '<div class="skel-line w60"></div><div class="skel-line w35"></div>' +
+        '<div class="skel-line w90"></div><div class="skel-line w80"></div>' +
+        '<div class="skel-actions"><span class="skel-btn"></span><span class="skel-btn"></span></div></div>';
+    }
+    host.innerHTML = sk;
+  }
+
+  function discoverStateHTML(kind) {
+    if (kind === "error") {
+      return '<div class="disc-state"><div class="disc-state-icon">⚠</div>' +
+        "<h3>Couldn't load the marketplace</h3>" +
+        "<p>Instrument data is unavailable right now. Please try again.</p>" +
+        '<button id="disc-retry" class="btn btn-primary" type="button">Retry</button></div>';
+    }
+    return '<div class="disc-state"><div class="disc-state-icon">🔍</div>' +
+      "<h3>No instruments match</h3>" +
+      "<p>Try a different category, risk level or search term.</p>" +
+      '<button id="disc-reset" class="btn btn-ghost" type="button">Clear filters</button></div>';
+  }
+
+  function paintDiscover() {
+    var host = $("discover-grid"); if (!host) return;
+    var all;
+    try {
+      all = buildDiscoverUniverse();
+    } catch (e) {
+      host.innerHTML = discoverStateHTML("error");
+      var rb = $("disc-retry");
+      if (rb) rb.addEventListener("click", function () { _discLoaded = false; renderDiscover(); });
+      return;
+    }
+    if (!all || !all.length) {
+      host.innerHTML = discoverStateHTML("error");
+      var rb2 = $("disc-retry");
+      if (rb2) rb2.addEventListener("click", function () { _discLoaded = false; renderDiscover(); });
+      return;
+    }
+    var filtered = all.filter(matchesDiscover);
+    if (!filtered.length) {
+      host.innerHTML = discoverStateHTML("empty");
+      var rs = $("disc-reset");
+      if (rs) rs.addEventListener("click", function () {
+        discSearch = ""; discRisk = "all"; discCat = "all";
+        renderDiscoverToolbar(); renderDiscoverCats(); paintDiscover();
+      });
+      return;
+    }
+    _discIndex = {};
+    filtered.forEach(function (f) { _discIndex[f.key] = f; });
+    host.innerHTML = filtered.map(discoverCard).join("");
+    wireDiscoverCards(host);
+  }
+
+  function discoverCard(inst) {
+    var day = inst.dayChangePct == null
+      ? '<span class="disc-day neutral">—</span>'
+      : '<span class="disc-day ' + cls_dir(inst.dayChangePct) + '" style="color:' + dirColor(inst.dayChangePct) + ';">' + pct(inst.dayChangePct) + "</span>";
+    var priceLbl = inst.assetClass === "mf" ? "NAV" : "Price";
+    var riskCls = "risk-" + inst.risk.toLowerCase().replace(/\s+/g, "-");
+    var checked = discCompare[inst.key] ? " checked" : "";
+    return '<div class="product-card discover-card" data-key="' + esc(inst.key) + '">' +
+      '<div class="disc-card-head">' +
+        '<div><div class="product-name">' + esc(inst.name) + "</div>" +
+        '<div class="disc-type">' + esc(inst.catLabel) + "</div></div>" +
+        '<span class="disc-risk ' + riskCls + '">' + esc(inst.risk) + "</span>" +
+      "</div>" +
+      '<div class="disc-price-row">' +
+        '<div><span class="disc-price">' + fmt(inst.price) + '</span> <span class="disc-price-lbl">' + priceLbl + "</span></div>" +
+        day +
+      "</div>" +
+      '<p class="disc-desc">' + esc(inst.desc) + "</p>" +
+      '<div class="disc-actions">' +
+        '<button class="btn btn-ghost disc-details" type="button">View Details</button>' +
+        '<label class="disc-compare-toggle"><input type="checkbox" class="disc-compare-cb"' + checked + '> Compare</label>' +
+        '<button class="btn btn-primary disc-invest" type="button">Invest</button>' +
+      "</div></div>";
+  }
+
+  function wireDiscoverCards(host) {
+    Array.prototype.forEach.call(host.querySelectorAll(".discover-card"), function (card) {
+      var inst = _discIndex[card.getAttribute("data-key")];
+      if (!inst) return;
+      var det = card.querySelector(".disc-details");
+      var inv = card.querySelector(".disc-invest");
+      var cb = card.querySelector(".disc-compare-cb");
+      if (det) det.addEventListener("click", function () { openProduct(inst.product); });
+      if (inv) inv.addEventListener("click", function () { openProduct(inst.product); });
+      if (cb) cb.addEventListener("change", function () {
+        if (cb.checked) discCompare[inst.key] = inst; else delete discCompare[inst.key];
+        renderCompareBar();
+      });
+    });
+  }
+
+  function renderCompareBar() {
+    var bar = $("discover-compare-bar"); if (!bar) return;
+    var keys = Object.keys(discCompare);
+    if (!keys.length) { bar.hidden = true; bar.innerHTML = ""; return; }
+    bar.hidden = false;
+    bar.innerHTML = '<span class="cmp-count">' + keys.length + " selected to compare</span>" +
+      '<div class="cmp-actions">' +
+        '<button id="disc-cmp-clear" class="btn btn-ghost" type="button">Clear</button>' +
+        '<button id="disc-cmp-go" class="btn btn-primary" type="button"' + (keys.length < 2 ? " disabled" : "") + ">Compare " + keys.length + "</button>" +
+      "</div>";
+    var c = $("disc-cmp-clear");
+    if (c) c.addEventListener("click", function () { discCompare = {}; renderCompareBar(); paintDiscover(); });
+    var g = $("disc-cmp-go");
+    if (g) g.addEventListener("click", openCompareModal);
+  }
+
+  function openCompareModal() {
+    // Re-resolve selections against a fresh universe by key so the table shows
+    // current prices/NAVs (a NAV refresh may have repriced since selection),
+    // falling back to the stored snapshot if a key is no longer present.
+    var fresh = {};
+    try { buildDiscoverUniverse().forEach(function (i) { fresh[i.key] = i; }); } catch (e) { /* keep snapshot */ }
+    var items = Object.keys(discCompare).map(function (k) { return fresh[k] || discCompare[k]; });
+    if (items.length < 2) return;
+    var head = "<th>Metric</th>" + items.map(function (i) { return "<th>" + esc(i.name) + "</th>"; }).join("");
+    function rowR(label, fn) {
+      return "<tr><td><b>" + label + "</b></td>" + items.map(function (i) { return "<td>" + fn(i) + "</td>"; }).join("") + "</tr>";
+    }
+    var body = '<div class="compare-modal"><h2 style="margin:0 0 10px;">Compare instruments</h2>' +
+      '<div class="compare-scroll"><table class="data-table compare-table">' +
+      "<thead><tr>" + head + "</tr></thead><tbody>" +
+      rowR("Category", function (i) { return esc(i.catLabel); }) +
+      rowR("Price / NAV", function (i) { return fmt(i.price); }) +
+      rowR("Daily change", function (i) { return i.dayChangePct == null ? "—" : '<span style="color:' + dirColor(i.dayChangePct) + ';">' + pct(i.dayChangePct) + "</span>"; }) +
+      rowR("Risk level", function (i) { return esc(i.risk); }) +
+      rowR("Yield / return", function (i) { return esc(i.yield || "—"); }) +
+      rowR("Description", function (i) { return esc(i.desc); }) +
+      "</tbody></table></div>" +
+      '<button id="cmp-close" class="btn btn-ghost" style="margin-top:12px;">Close</button></div>';
+    openModal(body);
+    var cl = $("cmp-close"); if (cl) cl.addEventListener("click", closeModal);
   }
 
   /* -------------------------------------------------------------- copilot */
@@ -1252,12 +1567,13 @@
   }
 
   /* ============================================================ ROUTER */
-  var PANELS = ["dashboard", "analytics", "learn", "profile", "invest", "copilot", "trust"];
+  var PANELS = ["dashboard", "discover", "analytics", "learn", "profile", "invest", "copilot", "trust"];
   var current = "dashboard";
   function isActive(name) { return current === name; }
   function renderPanel(name) {
     switch (name) {
       case "dashboard": renderDashboard(); break;
+      case "discover": renderDiscover(); break;
       case "analytics": renderAnalytics(); break;
       case "learn": renderLearn(); break;
       case "profile": renderProfile(); break;

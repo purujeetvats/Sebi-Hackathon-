@@ -29,6 +29,10 @@
         <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>
         <span class="nav-label">Dashboard</span>
       </button>
+      <button class="nav-btn" type="button" data-panel="discover">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <span class="nav-label">Discover</span>
+      </button>
       <button class="nav-btn" type="button" data-panel="analytics">
         <svg class="nav-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M4 20V11"/><path d="M12 20V4"/><path d="M20 20v-7"/></svg>
         <span class="nav-label">Analytics</span>
@@ -91,6 +95,19 @@
         <div id="holdings-table" class="card data-container"></div>
         <div id="alerts-feed" class="card data-container"></div>
       </div>
+    </section>
+
+    <section class="panel" id="panel-discover" aria-label="Discover">
+      <header class="panel-header">
+        <h1>Discover</h1>
+        <p class="panel-sub">Explore every asset class — categorised, risk-graded and priced live.</p>
+      </header>
+      <div class="panel-body">
+        <div id="discover-toolbar" class="discover-toolbar data-container"></div>
+        <div id="discover-categories" class="discover-categories data-container"></div>
+        <div id="discover-grid" class="product-grid data-container"></div>
+      </div>
+      <div id="discover-compare-bar" class="discover-compare-bar" hidden></div>
     </section>
 
     <section class="panel" id="panel-analytics" aria-label="Analytics">
