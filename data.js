@@ -219,6 +219,30 @@ const NIVESH_DATA = {
       blurb: "\"Guaranteed 24% assured returns\" from an unregistered agro-gold pool. Not found in any SEBI/exchange registry — classic red flag." }
   ],
 
+  /* Investment-gateway brokers. NiveshOS is an aggregator/advisor: it prepares
+     the order and hands off to a SEBI-registered broker for KYC, payment and
+     execution — it never places trades itself. `supports` lists the asset
+     classes each broker can transact, used to gate the redirect. `host` is the
+     placeholder deep-link target; a real integration swaps it for the broker's
+     basket/OAuth handoff. Logos are rendered as colour + mark placeholders.   */
+  brokers: [
+    { id: "zerodha",    name: "Zerodha",     platform: "Kite",        color: "#387ed1", mark: "Z", host: "kite.zerodha.com",
+      desc: "India's largest retail broker. Flat-fee delivery, deep charts via Kite, full listed-market coverage.",
+      supports: ["equity", "etf", "mf", "bond", "reit", "invit"] },
+    { id: "groww",      name: "Groww",       platform: "Groww App",   color: "#00b386", mark: "G", host: "groww.in",
+      desc: "Beginner-friendly app for stocks, ETFs and direct (zero-commission) mutual funds.",
+      supports: ["equity", "etf", "mf", "bond"] },
+    { id: "angelone",   name: "Angel One",   platform: "Angel One",   color: "#f4593b", mark: "A", host: "angelone.in",
+      desc: "Full-service broker with research, SmartAPI and every listed asset class including REITs & InvITs.",
+      supports: ["equity", "etf", "mf", "bond", "reit", "invit"] },
+    { id: "upstox",     name: "Upstox",      platform: "Upstox Pro",  color: "#5a3df0", mark: "U", host: "upstox.com",
+      desc: "Low-cost broker backed by Ratan Tata & Tiger Global; fast paperless onboarding.",
+      supports: ["equity", "etf", "mf", "bond"] },
+    { id: "paytmmoney", name: "Paytm Money", platform: "Paytm Money", color: "#00baf2", mark: "P", host: "paytmmoney.com",
+      desc: "SEBI-registered arm of Paytm for stocks, ETFs, direct mutual funds and NPS.",
+      supports: ["equity", "etf", "mf", "bond"] }
+  ],
+
   /* 5 education modules (shared) ------------------------------------------ */
   lessons: [
     { id: "reit", title: "REITs", emoji: "🏢", minutes: 4,
@@ -294,6 +318,31 @@ const NIVESH_DATA = {
       options: [ { t: "Protecting capital above all", w: 1 }, { t: "Steady income", w: 2 }, { t: "Balanced growth", w: 3 }, { t: "Maximum long-term growth", w: 4 } ] }
   ],
 
+  /* AI Suitability Assessment — the questionnaire the pre-gateway assessment
+     collects. Data-driven so questions can be added later without touching the
+     engine: each option carries a value `v` (1 worst … 4 best for risk-taking)
+     and each question a `field` the scorer buckets into ("capacity" = ability
+     to take risk, "tolerance" = willingness). `key` mirrors the field id used
+     by the engine's prudence overrides (emergency, horizon).                  */
+  suitabilityAssessment: [
+    { id: "age", label: "What is your age?", field: "capacity",
+      options: [{ t: "Under 30", v: 4 }, { t: "30–45", v: 3 }, { t: "45–60", v: 2 }, { t: "Above 60", v: 1 }] },
+    { id: "occupation", label: "Your occupation / income type", field: "capacity",
+      options: [{ t: "Salaried (stable)", v: 4 }, { t: "Self-employed / professional", v: 3 }, { t: "Business owner", v: 2 }, { t: "Retired / student", v: 1 }] },
+    { id: "income", label: "Annual income", field: "capacity",
+      options: [{ t: "Under ₹5 lakh", v: 1 }, { t: "₹5–15 lakh", v: 2 }, { t: "₹15–30 lakh", v: 3 }, { t: "Above ₹30 lakh", v: 4 }] },
+    { id: "expenses", label: "Monthly expenses (share of income)", field: "capacity",
+      options: [{ t: "Under 40%", v: 4 }, { t: "40–60%", v: 3 }, { t: "60–80%", v: 2 }, { t: "Over 80%", v: 1 }] },
+    { id: "emergency", label: "Emergency fund", field: "capacity",
+      options: [{ t: "6+ months of expenses", v: 4 }, { t: "3–6 months", v: 3 }, { t: "Under 3 months", v: 2 }, { t: "None yet", v: 1 }] },
+    { id: "goal", label: "Primary goal for this money", field: "tolerance",
+      options: [{ t: "Protect capital", v: 1 }, { t: "Steady income", v: 2 }, { t: "Balanced growth", v: 3 }, { t: "Maximise growth", v: 4 }] },
+    { id: "horizon", label: "When will you need most of it?", field: "capacity",
+      options: [{ t: "Under 2 years", v: 1 }, { t: "2–5 years", v: 2 }, { t: "5–10 years", v: 3 }, { t: "10+ years", v: 4 }] },
+    { id: "tolerance", label: "If this fell 20% in a month, you'd…", field: "tolerance",
+      options: [{ t: "Sell everything", v: 1 }, { t: "Sell some", v: 2 }, { t: "Hold and wait", v: 3 }, { t: "Buy more", v: 4 }] }
+  ],
+
   /* Jargon buster — plain-language definitions, searchable in Learn and
      answerable by the copilot ("what is NAV?").                            */
   glossary: [
@@ -313,7 +362,45 @@ const NIVESH_DATA = {
     { term: "Drawdown", def: "The fall from a portfolio's peak to its trough. A 50% drawdown needs a 100% gain to recover — which is why avoiding deep falls beats chasing gains." },
     { term: "LTCG", def: "Long-Term Capital Gains — profit on assets held past a threshold (12 months for listed equity), taxed at a lower rate than short-term gains." },
     { term: "Suitability", def: "Matching a product's risk and complexity to your profile before you're allowed to buy — the gate that stands between a beginner and a leveraged exotic." }
-  ]
+  ],
+
+  /* ISIN master — simulates the depository / RTA security master a CAS import
+     resolves each row against (this is exactly what a real NSDL/CDSL feed keys
+     on). ISIN → instrument metadata. Extend to recognise more instruments;
+     any ISIN not here surfaces as "unknown" for manual correction on import. */
+  isinMap: {
+    "INE040A01034": { symbol: "HDFCBANK",   name: "HDFC Bank Ltd",                       assetClass: "equity", sector: "Financials" },
+    "INE090A01021": { symbol: "ICICIBANK",  name: "ICICI Bank Ltd",                      assetClass: "equity", sector: "Financials" },
+    "INE002A01018": { symbol: "RELIANCE",   name: "Reliance Industries Ltd",             assetClass: "equity", sector: "Energy" },
+    "INE009A01021": { symbol: "INFY",       name: "Infosys Ltd",                         assetClass: "equity", sector: "IT" },
+    "INE467B01029": { symbol: "TCS",        name: "Tata Consultancy Services Ltd",       assetClass: "equity", sector: "IT" },
+    "INE397D01024": { symbol: "BHARTIARTL", name: "Bharti Airtel Ltd",                   assetClass: "equity", sector: "Telecom" },
+    "INE585B01010": { symbol: "MARUTI",     name: "Maruti Suzuki India Ltd",             assetClass: "equity", sector: "Auto" },
+    "INE752E01010": { symbol: "POWERGRID",  name: "Power Grid Corp of India Ltd",        assetClass: "equity", sector: "Utilities" },
+    "INF209KB1ZK6": { symbol: "SBIBLUE",    name: "SBI Bluechip Fund — Direct Growth",   assetClass: "mf",     sector: "Diversified" },
+    "INF179KC1947": { symbol: "HDFCFLEXI",  name: "HDFC Flexi Cap Fund — Direct Growth", assetClass: "mf",     sector: "Diversified" }
+  },
+
+  /* Sample CAMS/KFintech-style Consolidated Account Statement (plain text),
+     used for the demo and as a fallback when a PDF can't be parsed. Columns are
+     separated by 2+ spaces. Deliberately mixed so the importer exercises every
+     bucket: new instruments, a holding already in the book (duplicate), an
+     unknown ISIN (needs manual correction) and a malformed row (error).       */
+  sampleCAS: [
+    "CAMS & KFintech — Consolidated Account Statement (CAS)",
+    "Statement Period: 01-Apr-2026 to 06-Jul-2026     PAN: AWVPR****J",
+    "Depository: NSDL / CDSL      Registrar: CAMS / KFintech",
+    "",
+    "ISIN            Instrument                              Type    Qty         Value(INR)",
+    "INE467B01029    Tata Consultancy Services Ltd           EQ      15          46500.00",
+    "INE585B01010    Maruti Suzuki India Ltd                 EQ      6           66120.00",
+    "INF209KB1ZK6    SBI Bluechip Fund - Direct Growth       MF      250.5       23610.00",
+    "INE752E01010    Power Grid Corp of India Ltd            EQ      120         34800.00",
+    "INE040A01034    HDFC Bank Ltd                           EQ      50          41492.50",
+    "INE528G01035    Yes Bank Ltd                            EQ      400         8200.00",
+    "INE999X01099    Unlisted Startup Pre-IPO Pool           EQ",
+    "End of Statement"
+  ].join("\n")
 };
 
 /* --------------------------------------------------------------------------

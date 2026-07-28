@@ -49,7 +49,13 @@
     completedLessons: [],
     purchases: [],              // holding-shaped objects appended by order flow
     consents: [],
-    auditTrail: []
+    auditTrail: [],
+    assessment: null,           // AI Suitability Assessment result (see gateway)
+    importedHoldings: [],       // holdings merged in from a CAS import (see CAS)
+    goals: [],                  // goal-based investment plans (see Goal Planner)
+    alertConfig: null,          // Smart Alerts thresholds (see alerts engine)
+    alertsRead: [],             // ids of alerts marked read
+    alertLog: []                // logged event alerts (NAV refresh, data update, …)
   };
   var _rendered = false;
 
@@ -97,7 +103,7 @@
     if (!u) return;
     // point the live data view at this user's portfolio
     D.investor = { name: u.name, pan: u.pan, riskProfile: null };
-    D.accounts = u.accounts || [];
+    D.accounts = (u.accounts || []).slice();   // copy — CAS import may append a synthetic account
     D.holdings = u.holdings || [];
     D.history = u.history || [];
     // reflect identity in the sidebar chip
@@ -116,6 +122,12 @@
     state.purchases = [];
     state.consents = [];
     state.auditTrail = [];
+    state.assessment = null;
+    state.importedHoldings = [];
+    state.goals = defaultSeedGoals();
+    state.alertConfig = defaultAlertConfig();
+    state.alertsRead = [];
+    state.alertLog = [];
     if (s.onboarded) {
       state.onboarded = true;
       grantConsents(CONSENT_SCOPES.map(function (c) { return c.id; }));
@@ -141,7 +153,7 @@
 
   /* ---------------------------------------------------- derived portfolio */
   function baseHoldings() { return (D.holdings || []).slice(); }
-  function allHoldings() { return baseHoldings().concat(state.purchases); }
+  function allHoldings() { return baseHoldings().concat(state.purchases).concat(state.importedHoldings || []); }
   function hv(h) { return (h.qty || 0) * (h.ltp || 0); }
   function marketHoldings() { return allHoldings().filter(function (h) { return h.assetClass !== "cash"; }); }
   function netWorth() { return allHoldings().reduce(function (s, h) { return s + hv(h); }, 0); }
@@ -541,37 +553,271 @@
       "<tbody>" + body + "</tbody></table>";
   }
 
-  function alerts() {
-    var list = [];
+  /* ==================================================== SMART ALERTS ENGINE
+     Generates notifications from live portfolio analytics (condition alerts,
+     recomputed each render) plus runtime events (NAV refresh, data update,
+     diversification improvements — logged with a timestamp). Priority levels
+     map to badge classes: serious=High, warn=Medium, info=Low. Read-state and
+     the event log persist per-user in localStorage. No network, no advice —
+     purely descriptive signals off the same numbers the analytics panel uses. */
+  var ALERT_META = {
+    concentration: { label: "Concentration", icon: "▲" },
+    drop:          { label: "Drawdown",      icon: "↓" },
+    price:         { label: "Price move",    icon: "⇅" },
+    dividend:      { label: "Distribution",  icon: "◆" },
+    diversify:     { label: "Diversified",   icon: "⚖" },
+    overlap:       { label: "Fund overlap",  icon: "⚙" },
+    cash:          { label: "Idle cash",     icon: "○" },
+    consolidated:  { label: "Consolidated",  icon: "✓" },
+    nav:           { label: "NAV refresh",   icon: "↻" },
+    data:          { label: "Data source",   icon: "◈" }
+  };
+  var LEVEL_RANK = { serious: 0, warn: 1, info: 2 };
+  var PRIORITY_LABEL = { serious: "High", warn: "Medium", info: "Low" };
+  function defaultAlertConfig() { return { dropPct: 3, concentrationPct: 30, movePct: 3 }; }
+  function alertCfg() {
+    if (!state.alertConfig) state.alertConfig = defaultAlertConfig();
+    return state.alertConfig;
+  }
+  function productFor(sym) {
+    return (D.products || []).filter(function (p) { return p.quoteSym === sym || p.symbol === sym; })[0];
+  }
+  function diversifiedClassCount() {
+    return assetAlloc().filter(function (a) { return a.key !== "cash" && a.pct >= 5; }).length;
+  }
+
+  /* live, deterministic-id alerts derived from current holdings */
+  function computeConditionAlerts() {
+    var cfg = alertCfg(), list = [];
     var fp = financialsPct(), ti = topIssuer(), ov = mfOverlap(), dp = dayPnL();
-    if (fp > 30) list.push({ level: "serious", icon: "⚠", title: "Sector concentration", text: "Financials are <b>" + fp.toFixed(1) + "%</b> of your market value — above the 30% comfort band. Top issuer <b>" + esc(ti.name) + "</b> alone is " + ti.pct.toFixed(1) + "%.", link: "analytics" });
-    if (ov && ov.pct >= 60) list.push({ level: "warn", icon: "⚙", title: "Fund overlap", text: "<b>" + esc(ov.a.name.split(" —")[0]) + "</b> &amp; <b>" + esc(ov.b.name.split(" —")[0]) + "</b> overlap ~" + ov.pct + "% (" + ov.common.length + " common holdings) — less diversified than it looks.", link: "analytics" });
+    var topSec = sectorExposure().filter(function (s) { return s.sector !== "Diversified"; })[0];
+
+    if (topSec && topSec.pct > cfg.concentrationPct) {
+      list.push({ id: "cond:concentration", type: "concentration", level: "serious", link: "analytics",
+        title: topSec.sector + " concentration",
+        text: "<b>" + topSec.sector + "</b> is <b>" + topSec.pct.toFixed(1) + "%</b> of market value — above your " + cfg.concentrationPct + "% band. Top issuer <b>" + esc(ti.name) + "</b> alone is " + ti.pct.toFixed(1) + "%." });
+    }
+    if (dp.pct < -cfg.dropPct) {
+      var hard = dp.pct < -(cfg.dropPct * 1.5);
+      list.push({ id: "cond:drop", type: "drop", level: hard ? "serious" : "warn", link: "copilot",
+        title: "Portfolio down " + pct(dp.pct).replace("−", "−") + " today",
+        text: "Net worth moved <b>" + fmtSigned(dp.rupees) + "</b> (" + pct(dp.pct) + ") — past your −" + cfg.dropPct + "% alert threshold." });
+    }
+    // significant single-name moves, biggest first, capped
+    mergedHoldings().filter(function (r) { return Math.abs(r.dayChangePct || 0) >= cfg.movePct; })
+      .sort(function (a, b) { return Math.abs(b.dayChangePct) - Math.abs(a.dayChangePct); })
+      .slice(0, 3).forEach(function (r) {
+        var up = r.dayChangePct > 0;
+        list.push({ id: "cond:price:" + r.symbol, type: "price", level: up ? "info" : "warn", link: "dashboard",
+          title: r.symbol + " " + pct(r.dayChangePct),
+          text: "<b>" + esc(r.name) + "</b> moved " + pct(r.dayChangePct) + " today — a " + cfg.movePct + "%+ swing on a " + fmt(r.value) + " position." });
+      });
+    // distributions/dividends for held REITs/InvITs, if catalogue data exists
+    marketHoldings().filter(function (h) { return h.assetClass === "reit" || h.assetClass === "invit"; })
+      .sort(function (a, b) { return hv(b) - hv(a); })
+      .slice(0, 2).forEach(function (h) {
+        var p = productFor(h.symbol); if (!p || !p.yieldOrReturn) return;
+        list.push({ id: "cond:dividend:" + h.symbol, type: "dividend", level: "info", link: "dashboard",
+          title: h.symbol + " distribution",
+          text: "<b>" + esc(h.name) + "</b> pays <b>" + esc(p.yieldOrReturn) + "</b> — a quarterly payout accrues on your " + _inr.format(h.qty) + " units." });
+      });
+    // positive: portfolio is well spread
+    var classes = diversifiedClassCount();
+    if (classes >= 4 || (topSec && topSec.pct < 25)) {
+      list.push({ id: "cond:diversify", type: "diversify", level: "info", link: "analytics",
+        title: "Well diversified",
+        text: classes + " asset classes above 5% weight" + (topSec ? ", top sector just " + topSec.pct.toFixed(1) + "%" : "") + " — concentration risk is low." });
+    }
+    if (ov && ov.pct >= 60) {
+      list.push({ id: "cond:overlap", type: "overlap", level: "warn", link: "analytics",
+        title: "Fund overlap",
+        text: "<b>" + esc(ov.a.name.split(" —")[0]) + "</b> &amp; <b>" + esc(ov.b.name.split(" —")[0]) + "</b> overlap ~" + ov.pct + "% (" + ov.common.length + " common holdings) — less diversified than it looks." });
+    }
+    if (idleCash() > 0) {
+      list.push({ id: "cond:cash", type: "cash", level: "warn", link: "invest",
+        title: "Idle cash",
+        text: "<b>" + fmt(idleCash()) + "</b> sitting idle at ~0%. " + suitableProducts().length + " suitable options in Discover." });
+    }
     var dupes = mergedHoldings().filter(function (r) { return r.accounts.length > 1; });
-    if (dupes.length) list.push({ level: "info", icon: "✓", title: "Consolidated view", text: dupes.map(function (d) { return d.symbol; }).join(" &amp; ") + " held across 2 brokers — now merged into one holding.", link: "dashboard" });
-    if (idleCash() > 0) list.push({ level: "warn", icon: "○", title: "Idle cash", text: "<b>" + fmt(idleCash()) + "</b> sitting idle at ~0%. " + suitableProducts().length + " suitable options in Discover.", link: "invest" });
-    if (dp.rupees < 0) list.push({ level: "info", icon: "↓", title: "Today's move", text: "Portfolio <b>" + pct(dp.pct) + "</b> today, led by " + esc(riskiestHolding().symbol) + " " + pct(riskiestHolding().dayChangePct) + " and bank stocks.", link: "copilot" });
+    if (dupes.length) {
+      list.push({ id: "cond:consolidated", type: "consolidated", level: "info", link: "dashboard",
+        title: "Consolidated view",
+        text: dupes.map(function (d) { return d.symbol; }).join(" &amp; ") + " held across 2 brokers — merged into one holding." });
+    }
     return list;
   }
+
+  /* append a timestamped event alert (NAV refresh, data update, …) */
+  function logAlert(type, level, title, text, link) {
+    var m = ALERT_META[type] || {};
+    state.alertLog.unshift({ id: type + ":" + Date.now(), type: type, level: level || "info",
+      title: title, text: text, link: link || "dashboard", ts: nowStamp(), event: true });
+    if (state.alertLog.length > 30) state.alertLog.length = 30;
+    save("alertLog");
+    refreshAlertsUI();
+  }
+
+  /* merged, prioritised feed: live condition alerts + logged events */
+  function allAlerts() {
+    var read = state.alertsRead || [];
+    var list = computeConditionAlerts().concat(state.alertLog || []);
+    list.forEach(function (a) {
+      a.icon = a.icon || (ALERT_META[a.type] || {}).icon || "•";
+      a.read = read.indexOf(a.id) >= 0;
+    });
+    return list.sort(function (a, b) {
+      var r = (LEVEL_RANK[a.level] || 9) - (LEVEL_RANK[b.level] || 9);
+      if (r) return r;
+      return (b.ts || "") < (a.ts || "") ? -1 : 1; // events newest first
+    });
+  }
+  function unreadCount() {
+    return allAlerts().filter(function (a) { return !a.read; }).length;
+  }
+  function markAlertRead(id) {
+    if ((state.alertsRead || []).indexOf(id) < 0) { state.alertsRead.push(id); save("alertsRead"); }
+    refreshAlertsUI();
+  }
+  function markAllAlertsRead() {
+    allAlerts().forEach(function (a) { if (state.alertsRead.indexOf(a.id) < 0) state.alertsRead.push(a.id); });
+    save("alertsRead");
+    refreshAlertsUI();
+  }
+
+  /* ---- dashboard preview card (top few, highest priority) ---- */
   function renderAlerts() {
     var host = $("alerts-feed"); if (!host) return;
-    host.innerHTML = alerts().map(function (a) {
-      return '<div class="alert alert-' + a.level + '" style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--hairline);cursor:pointer;" data-link="' + a.link + '">' +
-        '<span class="alert-icon" aria-hidden="true">' + a.icon + "</span>" +
-        '<div><div style="font-weight:600;font-size:13px;">' + esc(a.title) + "</div>" +
-        '<div style="font-size:12px;color:var(--ink-2);">' + a.text + "</div></div></div>";
-    }).join("");
-    Array.prototype.forEach.call(host.querySelectorAll("[data-link]"), function (n) {
-      n.addEventListener("click", function () { switchPanel(n.getAttribute("data-link")); });
+    var list = allAlerts().slice(0, 5);
+    host.innerHTML =
+      '<div class="alerts-card-head"><h3>Smart alerts</h3>' +
+      '<button class="btn-ghost alerts-open-center" type="button">Open notification centre →</button></div>' +
+      (list.length ? list.map(alertRow).join("") :
+        '<p class="alerts-empty">No alerts right now — your portfolio is inside every threshold.</p>');
+    wireAlertRows(host);
+    var open = host.querySelector(".alerts-open-center");
+    if (open) open.addEventListener("click", function () { openNotifCenter(); });
+  }
+  function alertRow(a) {
+    return '<div class="alert alert-' + a.level + (a.read ? " is-read" : "") + '" data-link="' + a.link + '" data-id="' + esc(a.id) + '">' +
+      '<span class="alert-icon" aria-hidden="true">' + a.icon + "</span>" +
+      '<div class="alert-body"><div class="alert-title-row">' +
+        '<span class="alert-title">' + esc(a.title) + "</span>" +
+        '<span class="badge-' + (a.level === "serious" ? "serious" : a.level === "warn" ? "warn" : "good") + ' prio-badge">' + PRIORITY_LABEL[a.level] + "</span></div>" +
+      '<div class="alert-text">' + a.text + "</div>" +
+      (a.ts ? '<div class="alert-ts">' + esc(a.ts) + "</div>" : "") +
+      "</div></div>";
+  }
+  function wireAlertRows(host) {
+    Array.prototype.forEach.call(host.querySelectorAll(".alert[data-link]"), function (n) {
+      n.addEventListener("click", function () {
+        var id = n.getAttribute("data-id"); if (id) markAlertRead(id);
+        switchPanel(n.getAttribute("data-link"));
+      });
     });
+  }
+
+  /* ---- notification centre (right-side drawer) ---- */
+  var notifFilter = "all";
+  function openNotifCenter() {
+    var panel = $("notif-panel"); if (!panel) return;
+    panel.hidden = false;
+    document.body.classList.add("notif-open");
+    renderNotifCenter();
+  }
+  function closeNotifCenter() {
+    var panel = $("notif-panel"); if (!panel) return;
+    panel.hidden = true;
+    document.body.classList.remove("notif-open");
+  }
+  function renderNotifCenter() {
+    var panel = $("notif-panel"); if (!panel || panel.hidden) return;
+    var all = allAlerts();
+    var cfg = alertCfg();
+    var types = {}; all.forEach(function (a) { types[a.type] = 1; });
+    var chips = [{ k: "all", l: "All" }, { k: "unread", l: "Unread · " + all.filter(function (a) { return !a.read; }).length }]
+      .concat(Object.keys(types).map(function (t) { return { k: t, l: (ALERT_META[t] || {}).label || t }; }));
+    var shown = all.filter(function (a) {
+      return notifFilter === "all" ? true : notifFilter === "unread" ? !a.read : a.type === notifFilter;
+    });
+    panel.innerHTML =
+      '<div class="notif-head">' +
+        '<div><h2>Notifications</h2><span class="notif-sub">' + all.filter(function (a) { return !a.read; }).length + ' unread · ' + all.length + ' total</span></div>' +
+        '<div class="notif-head-actions">' +
+          '<button class="btn-ghost" id="notif-mark-all" type="button">Mark all read</button>' +
+          '<button class="notif-close" id="notif-close" type="button" aria-label="Close">✕</button>' +
+        "</div>" +
+      "</div>" +
+      '<div class="notif-config">' +
+        '<label>Drawdown alert at −<input id="cfg-drop" type="number" min="1" max="50" step="1" value="' + cfg.dropPct + '">%</label>' +
+        '<label>Sector cap <input id="cfg-conc" type="number" min="10" max="90" step="5" value="' + cfg.concentrationPct + '">%</label>' +
+      "</div>" +
+      '<div class="notif-filters">' + chips.map(function (c) {
+        return '<button class="notif-chip' + (notifFilter === c.k ? " active" : "") + '" data-filter="' + c.k + '" type="button">' + esc(c.l) + "</button>";
+      }).join("") + "</div>" +
+      '<div class="notif-list">' + (shown.length ? shown.map(notifItem).join("") :
+        '<p class="alerts-empty">Nothing here — try another filter.</p>') + "</div>";
+
+    var cl = $("notif-close"); if (cl) cl.addEventListener("click", closeNotifCenter);
+    var ma = $("notif-mark-all"); if (ma) ma.addEventListener("click", markAllAlertsRead);
+    Array.prototype.forEach.call(panel.querySelectorAll(".notif-chip"), function (b) {
+      b.addEventListener("click", function () { notifFilter = b.getAttribute("data-filter"); renderNotifCenter(); });
+    });
+    var cd = $("cfg-drop"); if (cd) cd.addEventListener("change", function () {
+      var v = parseFloat(cd.value); if (v > 0) { alertCfg().dropPct = v; save("alertConfig"); refreshAlertsUI(); }
+    });
+    var cc = $("cfg-conc"); if (cc) cc.addEventListener("change", function () {
+      var v = parseFloat(cc.value); if (v > 0) { alertCfg().concentrationPct = v; save("alertConfig"); refreshAlertsUI(); }
+    });
+    Array.prototype.forEach.call(panel.querySelectorAll(".notif-item"), function (n) {
+      var id = n.getAttribute("data-id");
+      var go = n.querySelector(".notif-item-go");
+      if (go) go.addEventListener("click", function (e) {
+        e.stopPropagation(); markAlertRead(id); closeNotifCenter(); switchPanel(n.getAttribute("data-link"));
+      });
+      var rd = n.querySelector(".notif-item-read");
+      if (rd) rd.addEventListener("click", function (e) { e.stopPropagation(); markAlertRead(id); });
+    });
+  }
+  function notifItem(a) {
+    var badge = a.level === "serious" ? "serious" : a.level === "warn" ? "warn" : "good";
+    return '<div class="notif-item' + (a.read ? " is-read" : "") + '" data-id="' + esc(a.id) + '" data-link="' + a.link + '">' +
+      '<span class="notif-item-icon alert-' + a.level + '" aria-hidden="true">' + a.icon + "</span>" +
+      '<div class="notif-item-body">' +
+        '<div class="alert-title-row"><span class="alert-title">' + esc(a.title) + "</span>" +
+          '<span class="badge-' + badge + ' prio-badge">' + PRIORITY_LABEL[a.level] + "</span></div>" +
+        '<div class="alert-text">' + a.text + "</div>" +
+        '<div class="notif-item-foot">' +
+          '<span class="notif-item-meta">' + esc((ALERT_META[a.type] || {}).label || a.type) + (a.ts ? " · " + esc(a.ts) : " · live") + "</span>" +
+          '<span class="notif-item-actions">' +
+            (a.read ? "" : '<button class="link-btn notif-item-read" type="button">Mark read</button>') +
+            '<button class="link-btn notif-item-go" type="button">View →</button>' +
+          "</span>" +
+        "</div>" +
+      "</div></div>";
+  }
+
+  /* keep bell badge + open surfaces in sync after any change */
+  function refreshAlertsUI() {
+    var bell = $("notif-bell");
+    if (bell) {
+      var n = unreadCount();
+      var b = bell.querySelector(".notif-count");
+      if (b) { b.textContent = n > 9 ? "9+" : String(n); b.hidden = n === 0; }
+      bell.classList.toggle("has-unread", n > 0);
+    }
+    if (isActive("dashboard")) renderAlerts();
+    renderNotifCenter();
   }
 
   function renderDashboard() {
     renderDataSource();
+    renderCasEntry();
     renderKPIs();
     renderDonut($("alloc-donut"));
     renderLine($("value-line"));
     renderTradingView();
     renderAccountsStrip();
+    renderGoalsSummary();
     renderHoldingsTable();
     renderAlerts();
   }
@@ -700,6 +946,8 @@
     if (updated > 0) {
       if (D.dataSource) { D.dataSource.live = true; if (date) D.dataSource.asOf = isoDate(date); }
       audit("data", "Live NAV refresh from AMFI (mfapi.in): " + updated + " scheme(s) updated.");
+      logAlert("nav", "info", "NAV refresh complete", "<b>" + updated + "</b> mutual-fund scheme(s) repriced live from AMFI (mfapi.in).", "dashboard");
+      logAlert("data", "info", "Data source updated", "Prices &amp; NAVs now marked live" + (date ? " as of <b>" + esc(isoDate(date)) + "</b>" : "") + ".", "dashboard");
       renderDashboard();
       if (isActive("analytics")) renderAnalytics();
       if (isActive("invest")) renderInvest();
@@ -752,6 +1000,106 @@
     // asset mix vs suggested
     var am = $("asset-mix-card");
     if (am) { am.innerHTML = '<h3 style="margin:0 0 8px;">Your mix vs suggested</h3><div id="mix-inner"></div>'; renderMixBars($("mix-inner")); }
+    renderStressTest();
+  }
+
+  /* -------------------------------------------------- portfolio stress test
+     Hypothetical scenarios applied to a COPY of the live holdings — nothing in
+     state.* is mutated. Each scenario is a rule mapping a holding to a shock %;
+     results aggregate portfolio, asset-class and sector impact.               */
+  function bankWeight(h) {
+    return (h.underlying || []).filter(function (u) {
+      return /\bBank\b|HDFC Bank|ICICI Bank|Axis|Kotak|SBI/i.test(u.name);
+    }).reduce(function (s, u) { return s + (u.weight || 0); }, 0);
+  }
+  var STRESS_SCENARIOS = [
+    { id: "nifty10", label: "NIFTY −10%", desc: "Broad equity market falls 10%.",
+      shock: function (h) { return (h.assetClass === "equity" || h.assetClass === "mf") ? -10 : 0; } },
+    { id: "nifty20", label: "NIFTY −20%", desc: "A sharp 20% market correction.",
+      shock: function (h) { return (h.assetClass === "equity" || h.assetClass === "mf") ? -20 : 0; } },
+    { id: "bank15", label: "Banking −15%", desc: "Financial stocks sell off 15%.",
+      shock: function (h) {
+        if (h.assetClass === "equity") return h.sector === "Financials" ? -15 : 0;
+        if (h.assetClass === "mf" && h.underlying) return -15 * (bankWeight(h) / 100); // look-through bank weight
+        return 0;
+      } },
+    { id: "gold10", label: "Gold +10%", desc: "Gold rallies 10%.",
+      shock: function (h) { return h.sector === "Commodities" ? 10 : 0; } },
+    { id: "reit8", label: "REIT −8%", desc: "REIT units fall 8%.",
+      shock: function (h) { return h.assetClass === "reit" ? -8 : 0; } },
+    { id: "rates1", label: "Rates +1%", desc: "A 1% rate hike pressures bonds & yield assets.",
+      shock: function (h) {
+        if (h.assetClass === "bond") return -3;
+        if (h.assetClass === "reit" || h.assetClass === "invit") return -2.5;
+        return 0;
+      } }
+  ];
+  var stressScn = "nifty10";
+
+  function stressResult(scn) {
+    var before = 0, after = 0, byClass = {}, bySector = {};
+    allHoldings().forEach(function (h) {
+      var bv = hv(h), av = bv * (1 + (scn.shock(h) || 0) / 100);
+      before += bv; after += av;
+      var ck = h.assetClass, sk = h.sector || "Other";
+      (byClass[ck] = byClass[ck] || { before: 0, after: 0 }); byClass[ck].before += bv; byClass[ck].after += av;
+      (bySector[sk] = bySector[sk] || { before: 0, after: 0 }); bySector[sk].before += bv; bySector[sk].after += av;
+    });
+    return { before: before, after: after, delta: after - before, pct: before ? (after - before) / before * 100 : 0, byClass: byClass, bySector: bySector };
+  }
+
+  function stressDetail(x) {
+    var r = x.r;
+    var maxV = 0;
+    ASSET_ORDER.forEach(function (a) { var c = r.byClass[a.key]; if (c) maxV = Math.max(maxV, c.before, c.after); });
+    var classRows = ASSET_ORDER.filter(function (a) { return r.byClass[a.key]; }).map(function (a) {
+      var c = r.byClass[a.key], d = c.after - c.before;
+      var bw = maxV ? c.before / maxV * 100 : 0, aw = maxV ? c.after / maxV * 100 : 0;
+      var acol = d > 0 ? "var(--good)" : d < 0 ? "var(--critical)" : "var(--ink-muted)";
+      return '<div class="stress-arow"><div class="stress-arow-lbl">' + esc(TYPE_LABEL[a.key] || a.label) + "</div>" +
+        '<div class="stress-bars">' +
+          '<div class="stress-bar-track"><span class="anim-bar" data-grow="x" style="width:' + bw.toFixed(1) + '%;background:var(--ink-muted);"></span></div>' +
+          '<div class="stress-bar-track"><span class="anim-bar" data-grow="x" style="width:' + aw.toFixed(1) + '%;background:' + acol + ';"></span></div>' +
+        "</div>" +
+        '<div class="stress-arow-delta" style="color:' + acol + ';">' + (d ? fmtSigned(d) : "—") + "</div></div>";
+    }).join("");
+    var secs = Object.keys(r.bySector).map(function (s) { var o = r.bySector[s]; return { sector: s, before: o.before, delta: o.after - o.before }; })
+      .filter(function (s) { return Math.abs(s.delta) >= 1; })
+      .sort(function (a, b) { return a.delta - b.delta; });
+    var secRows = secs.length ? secs.map(function (s) {
+      var col = dirColor(s.delta), p = s.before ? s.delta / s.before * 100 : 0;
+      return '<div class="stress-srow"><span>' + esc(s.sector) + "</span><b style=\"color:" + col + ";\">" + fmtSigned(s.delta) + ' <span class="stress-srow-pct">' + pct(p) + "</span></b></div>";
+    }).join("") : '<p style="color:var(--ink-muted);font-size:12.5px;">This scenario doesn’t move any of your sectors.</p>';
+    return '<div class="stress-detail"><div class="stress-headline">' +
+      '<div><span class="stress-hl-lbl">' + esc(x.scn.desc) + "</span>" +
+        '<div class="stress-hl-nums"><span class="stress-before">' + fmt(r.before) + "</span>" +
+        '<span class="stress-arrow">→</span>' +
+        '<span class="stress-after" style="color:' + dirColor(r.delta) + ';">' + fmt(r.after) + "</span></div></div>" +
+      '<div class="stress-hl-delta" style="color:' + dirColor(r.delta) + ';">' + fmtSigned(r.delta) + "<span>" + pct(r.pct) + "</span></div></div>" +
+      '<div class="stress-cols"><div class="stress-col"><div class="stress-col-h">Before vs after · by asset class</div>' +
+        '<div class="stress-legend"><span><i style="background:var(--ink-muted);"></i>Before</span><span><i style="background:var(--accent);"></i>After</span></div>' +
+        classRows + "</div>" +
+        '<div class="stress-col"><div class="stress-col-h">Sector impact</div>' + secRows + "</div></div></div>";
+  }
+
+  function renderStressTest() {
+    var host = $("stress-test"); if (!host) return;
+    var results = STRESS_SCENARIOS.map(function (scn) { return { scn: scn, r: stressResult(scn) }; });
+    var cards = results.map(function (x) {
+      var active = x.scn.id === stressScn ? " active" : "";
+      return '<button class="stress-card' + active + '" type="button" data-scn="' + x.scn.id + '">' +
+        '<div class="stress-card-label">' + esc(x.scn.label) + "</div>" +
+        '<div class="stress-card-after">' + fmt(x.r.after) + "</div>" +
+        '<div class="stress-card-delta" style="color:' + dirColor(x.r.delta) + ';">' + fmtSigned(x.r.delta) + " · " + pct(x.r.pct) + "</div></button>";
+    }).join("");
+    var sel = results.filter(function (x) { return x.scn.id === stressScn; })[0] || results[0];
+    host.innerHTML = '<div class="stress-headwrap"><h3 style="margin:0;">Portfolio stress test</h3>' +
+      '<p class="stress-sub">Hypothetical shocks applied to your live holdings — your real portfolio is never changed.</p></div>' +
+      '<div class="stress-grid">' + cards + "</div>" + stressDetail(sel) +
+      '<p class="stress-disclaimer">⚠ Hypothetical simulations for education only — not a forecast, not investment advice. Real outcomes depend on many factors beyond a single shock.</p>';
+    Array.prototype.forEach.call(host.querySelectorAll(".stress-card"), function (b) {
+      b.addEventListener("click", function () { stressScn = b.getAttribute("data-scn"); renderStressTest(); });
+    });
   }
   function row(label, value, status) {
     return '<div class="stat-row" style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline);">' +
@@ -1005,84 +1353,367 @@
       ? idOrProduct
       : (D.products || []).filter(function (x) { return x.id === idOrProduct; })[0];
     if (!p) return;
-    var s = suitability(p);
-    var action;
-    if (s.ok) {
-      action = '<div style="margin-top:12px;"><label style="font-size:12px;color:var(--ink-muted);">Amount to invest (min ' + fmt(p.minInvest) + ')</label>' +
-        '<input id="invest-amt" type="number" min="' + p.minInvest + '" value="' + p.minInvest + '" style="display:block;width:100%;padding:8px;margin:4px 0;border:1px solid var(--hairline);border-radius:6px;background:var(--surface-2);color:var(--ink);">' +
-        '<button id="invest-go" class="btn-primary" style="width:100%;">Route order via ' + esc(defaultBroker()) + "</button></div>";
-    } else {
-      action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
-        '<div style="color:var(--serious);font-weight:600;">🔒 ' + esc(s.reason) + "</div>" +
-        (s.link ? '<button id="invest-fix" class="btn-primary" style="margin-top:8px;">Go fix this →</button>' : "") + "</div>";
+    var s = suitability(p);   // kept for the audit line below
+    // Regulatory gates first: an unregistered product is hard-blocked; a product
+    // that needs a lesson is gated until it's done. Financial suitability (tier /
+    // risk) is now handled by the AI Suitability Assessment, not a hard block.
+    var lessonOk = !p.requiredLesson || state.completedLessons.indexOf(p.requiredLesson) >= 0;
+    var lessonName = "";
+    if (p.requiredLesson) {
+      var ln = (D.lessons || []).filter(function (x) { return x.id === p.requiredLesson; })[0];
+      lessonName = ln ? ln.title : p.requiredLesson;
     }
-    var body = '<div class="product-modal"><div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">' +
+    var action, gateLink = null;
+    if (!p.registered) {
+      action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
+        '<div style="color:var(--serious);font-weight:600;">🔒 Not SEBI-registered — blocked for your protection.</div></div>';
+    } else if (!lessonOk) {
+      gateLink = "learn";
+      action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
+        '<div style="color:var(--serious);font-weight:600;">🔒 Finish the “' + esc(lessonName) + '” lesson to unlock.</div>' +
+        '<button id="invest-fix" class="btn-primary" style="margin-top:8px;">Go to lesson →</button></div>';
+    } else {
+      action = '<button id="invest-continue" class="btn-primary" style="width:100%;margin-top:12px;">Assess suitability &amp; invest →</button>';
+    }
+    var body = '<div class="product-modal">' + gatewaySteps("details") +
+      '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">' +
       '<h2 style="margin:0;">' + esc(p.name) + "</h2>" + gradeBadge(p.riskGrade) + "</div>" +
       '<div style="margin:6px 0;color:var(--ink-muted);font-size:12px;">' + esc(p.category) + "</div>" +
       '<p style="font-size:13px;color:var(--ink-2);line-height:1.5;">' + esc(p.blurb) + "</p>" +
       nutritionLabel(p) + action +
-      '<div id="order-progress" style="margin-top:12px;"></div>' +
       '<button id="prod-close" class="btn-ghost" style="margin-top:10px;">Close</button></div>';
     openModal(body);
     audit("suitability", "Suitability check on “" + p.name + "” — " + (s.ok ? "PASS" : "BLOCKED (" + s.gate + ")") + ".");
     if (!p.registered) audit("warning", "Unregistered-scheme warning shown for “" + p.name + "”.");
     var cl = $("prod-close"); if (cl) cl.addEventListener("click", closeModal);
-    var go = $("invest-go"); if (go) go.addEventListener("click", function () { routeOrder(p); });
-    var fx = $("invest-fix"); if (fx) fx.addEventListener("click", function () { closeModal(); switchPanel(s.link); });
-  }
-  function defaultBroker() {
-    var a = (D.accounts || [])[0];
-    return a ? a.broker : "your broker";
+    var go = $("invest-continue"); if (go) go.addEventListener("click", function () { openSuitabilityAssessment(p); });
+    var fx = $("invest-fix"); if (fx) fx.addEventListener("click", function () { closeModal(); if (gateLink) switchPanel(gateLink); });
   }
 
-  function routeOrder(p) {
-    var amtEl = $("invest-amt");
-    var amt = amtEl ? parseFloat(amtEl.value) : p.minInvest;
-    if (!amt || amt < p.minInvest) { toast("Minimum investment is " + fmt(p.minInvest)); return; }
-    var prog = $("order-progress"); var go = $("invest-go"); if (go) go.disabled = true;
-    var steps = ["Order created", "Sent to " + defaultBroker(), "Confirmed ✓"];
-    var i = 0;
-    function draw() {
-      if (!prog) return;
-      prog.innerHTML = steps.map(function (s, si) {
-        var stFmt = si < i ? "var(--good)" : si === i ? "var(--accent)" : "var(--ink-muted)";
-        var mark = si < i ? "✓" : si === i ? "●" : "○";
-        return '<div style="display:flex;gap:8px;padding:3px 0;color:' + stFmt + ';font-size:13px;"><span>' + mark + "</span>" + esc(s) + "</div>";
-      }).join("");
-    }
-    draw();
-    var timer = setInterval(function () {
-      i++;
-      draw();
-      if (i >= steps.length) {
-        clearInterval(timer);
-        commitPurchase(p, amt);
-        if (prog) prog.innerHTML += '<div style="color:var(--good);margin-top:6px;font-weight:600;">Added to your portfolio.</div>';
-      }
-    }, 750);
+  /* ======================================================= INVESTMENT GATEWAY
+     Broker-redirect flow (NO order execution — NiveshOS hands off to a
+     SEBI-registered broker). Steps, all reusing the single modal root:
+       Product Details → Investment Summary → Broker Selection → Redirect.
+     Architecture stays API-ready: brokerDeepLink() returns the handoff URL a
+     real integration would open; the demo shows it but never navigates.       */
+  var ASSET_LABEL = { equity: "Stocks", etf: "ETFs", mf: "Mutual Funds", bond: "Bonds", reit: "REITs", invit: "InvITs" };
+  var GATEWAY_STEPS = [
+    { key: "details", label: "Details" },
+    { key: "assess", label: "Assess" },
+    { key: "summary", label: "Summary" },
+    { key: "broker", label: "Broker" },
+    { key: "redirect", label: "Redirect" }
+  ];
+  function gatewaySteps(active) {
+    var reached = true;
+    var items = GATEWAY_STEPS.map(function (s) {
+      var isActiveStep = s.key === active;
+      var cls = isActiveStep ? "gw-step active" : (reached ? "gw-step done" : "gw-step");
+      if (isActiveStep) reached = false;
+      return '<span class="' + cls + '">' + esc(s.label) + "</span>";
+    }).join('<span class="gw-step-sep">›</span>');
+    return '<div class="gw-steps">' + items + "</div>";
   }
-  function commitPurchase(p, amt) {
-    var qty = p.price ? Math.max(1, Math.round(amt / p.price)) : 1;
-    var sectorMap = { reit: "Real Estate", invit: "Infrastructure", bond: "Financials", mf: "Diversified", etf: "Commodities" };
-    var holding = {
-      id: "buy_" + Date.now(), accountId: (D.accounts[0] || {}).id,
-      symbol: p.symbol || p.id.replace("p_", "").toUpperCase(), name: p.name,
-      assetClass: p.assetClass === "scam" ? "bond" : p.assetClass,
-      sector: p.sector || sectorMap[p.assetClass] || "Other",
-      qty: qty, avgPrice: p.price || amt, ltp: p.price || amt, dayChangePct: 0
+  function unitLabel(p) { return p.assetClass === "mf" ? "Units" : "Quantity"; }
+  function defaultQty(p) {
+    var price = p.price || 0;
+    return price > 0 ? Math.max(1, Math.ceil((p.minInvest || 0) / price)) : 1;
+  }
+
+  /* ---- AI Suitability Assessment (deterministic scoring engine) ----------
+     Reads D.suitabilityAssessment generically, so adding a question there needs
+     no engine change. Produces an investor profile, a suggested allocation, and
+     a per-instrument verdict (Suitable / Moderately Suitable / High Risk) with
+     reasoning. Advisory only — it never recommends buying or selling.          */
+  var ALLOC = {
+    Conservative: { Equity: 20, Debt: 55, Gold: 10, Cash: 15 },
+    Moderate: { Equity: 45, Debt: 35, Gold: 12, Cash: 8 },
+    Aggressive: { Equity: 65, Debt: 22, Gold: 8, Cash: 5 }
+  };
+  var RISK_ORDER = { "Low": 1, "Medium": 2, "High": 3, "Very High": 4 };
+  var PROFILE_MAX = { Conservative: 1, Moderate: 2, Aggressive: 3 };
+  function round1(n) { return Math.round(n * 10) / 10; }
+  function productRiskLevel(p) { return riskOf(p.riskGrade, p.assetClass); }
+
+  function computeAssessment(answers) {
+    var qs = D.suitabilityAssessment || [];
+    var cap = [], tol = [];
+    qs.forEach(function (q) {
+      var v = answers[q.id];
+      if (v == null) return;
+      (q.field === "tolerance" ? tol : cap).push(v);
+    });
+    function avg(a) { return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : 2.5; }
+    var capacity = avg(cap), tolerance = avg(tol);
+    var overall = 0.6 * capacity + 0.4 * tolerance;   // ability weighted over willingness
+    // hard prudence ceilings: no emergency fund or a <2y horizon caps at Conservative
+    var capped = (answers.emergency === 1 || answers.horizon === 1);
+    if (capped) overall = Math.min(overall, 1.9);
+    var profile = overall < 2.0 ? "Conservative" : overall < 3.0 ? "Moderate" : "Aggressive";
+    return {
+      answers: answers, capacity: round1(capacity), tolerance: round1(tolerance),
+      overall: round1(overall), profile: profile, capped: capped,
+      allocation: ALLOC[profile], ts: nowStamp()
     };
-    state.purchases.push(holding); save("purchases");
-    audit("order", "Order confirmed: " + fmt(amt) + " in “" + p.name + "” via " + defaultBroker() + " (" + qty + " units).");
-    toast("Order confirmed — " + p.name);
-    renderDashboard(); renderAnalytics(); renderInvest();
-    if (isActive("discover")) paintDiscover();
+  }
+
+  function assessSuitability(p, a) {
+    var lvl = productRiskLevel(p);                    // "Low" | "Medium" | "High" | "Very High"
+    var gap = (RISK_ORDER[lvl] || 2) - PROFILE_MAX[a.profile];
+    var status = gap <= 0 ? "Suitable" : gap === 1 ? "Moderately Suitable" : "High Risk";
+    var ans = a.answers || {};
+    var driver = null;
+    // prudence overrides
+    if (ans.emergency === 1 && (RISK_ORDER[lvl] || 0) >= 3) { status = "High Risk"; driver = "you have no emergency fund yet"; }
+    if (ans.horizon === 1 && (RISK_ORDER[lvl] || 0) >= 3 && status === "Suitable") { status = "Moderately Suitable"; driver = "your horizon is under 2 years"; }
+    if (!driver) {
+      if (ans.horizon === 1) driver = "a short (<2 year) horizon";
+      else if (ans.emergency === 1) driver = "a thin emergency buffer";
+      else if (ans.goal === 1) driver = "your capital-protection goal";
+      else driver = "your overall financial profile";
+    }
+    var tone = status === "Suitable" ? "good" : status === "Moderately Suitable" ? "warn" : "serious";
+    var cat = esc(p.category), lvlTxt = lvl.toLowerCase();
+    var reason;
+    if (status === "Suitable")
+      reason = "Your " + a.profile + " profile comfortably covers this " + lvlTxt + "-risk " + cat +
+        ". Given " + driver + ", it sits within the risk you can absorb.";
+    else if (status === "Moderately Suitable")
+      reason = "This " + lvlTxt + "-risk " + cat + " sits a step above your " + a.profile +
+        " profile. It can fit a small, deliberate allocation, but weigh it against " + driver + ".";
+    else
+      reason = "This " + lvlTxt + "-risk " + cat + " exceeds what your " + a.profile +
+        " profile supports — " + driver + " widens the gap. This is an educational suitability signal, not advice.";
+    return { status: status, tone: tone, reason: reason, level: lvl };
+  }
+
+  function statusPill(status, tone) {
+    return '<span class="badge badge-' + tone + ' gw-status-pill">' + esc(status) + "</span>";
+  }
+
+  // Entry point from Product Details. Shows the questionnaire, or jumps straight
+  // to the result if this session already has a completed assessment.
+  function openSuitabilityAssessment(p) {
+    if (state.assessment) { showAssessmentResult(p); return; }
+    renderAssessmentForm(p, {});
+  }
+
+  function renderAssessmentForm(p, prefill) {
+    var qs = D.suitabilityAssessment || [];
+    var groups = qs.map(function (q, qi) {
+      var opts = q.options.map(function (o, oi) {
+        var checked = prefill[q.id] === o.v ? " checked" : "";
+        return '<label class="assess-opt"><input type="radio" name="aq_' + esc(q.id) + '" value="' + o.v + '"' + checked + ">" +
+          "<span>" + esc(o.t) + "</span></label>";
+      }).join("");
+      return '<div class="assess-q" data-qid="' + esc(q.id) + '">' +
+        '<div class="assess-q-label">' + (qi + 1) + ". " + esc(q.label) + "</div>" +
+        '<div class="assess-opts">' + opts + "</div></div>";
+    }).join("");
+    var body = '<div class="gateway"><h2 style="margin:0;">Suitability assessment</h2>' + gatewaySteps("assess") +
+      '<p class="gw-note">A quick read on whether <b>' + esc(p.name) + "</b> fits your finances. Answer all " + qs.length +
+      " — we compute your investor profile and a suitability signal. Educational only, not investment advice.</p>" +
+      '<div class="assess-form">' + groups + "</div>" +
+      '<p id="assess-err" class="assess-err" hidden>Please answer every question to continue.</p>' +
+      '<div class="gw-actions"><button id="assess-back" class="btn btn-ghost">← Back</button>' +
+      '<button id="assess-submit" class="btn btn-primary">See my result →</button></div></div>';
+    openModal(body);
+    var bk = $("assess-back"); if (bk) bk.addEventListener("click", function () { openProduct(p); });
+    var sb = $("assess-submit"); if (sb) sb.addEventListener("click", function () { submitAssessment(p); });
+  }
+
+  function submitAssessment(p) {
+    var qs = D.suitabilityAssessment || [];
+    var answers = {}, missing = false;
+    qs.forEach(function (q) {
+      var picked = document.querySelector('input[name="aq_' + q.id + '"]:checked');
+      if (picked) answers[q.id] = parseInt(picked.value, 10); else missing = true;
+    });
+    if (missing) { var e = $("assess-err"); if (e) e.hidden = false; return; }
+    state.assessment = computeAssessment(answers); save("assessment");
+    audit("assessment", "AI suitability assessment completed — investor profile: " + state.assessment.profile + ".");
+    showAssessmentResult(p);
+  }
+
+  function showAssessmentResult(p) {
+    var a = state.assessment;
+    if (!a) { renderAssessmentForm(p, {}); return; }
+    var v = assessSuitability(p, a);
+    var allocRows = Object.keys(a.allocation).map(function (k, i) {
+      var wpct = a.allocation[k];
+      return '<div class="alloc-row"><span class="alloc-lbl">' + esc(k) + "</span>" +
+        '<span class="alloc-track"><span style="width:' + wpct + "%;background:" + sv(i) + ';"></span></span>' +
+        '<span class="alloc-pct">' + wpct + "%</span></div>";
+    }).join("");
+    var ack = v.status === "High Risk"
+      ? '<label class="assess-ack"><input type="checkbox" id="assess-ack-cb"> I understand this may not suit my profile and want to proceed anyway.</label>'
+      : "";
+    var body = '<div class="gateway"><div class="gw-modal-head"><h2 style="margin:0;">Your suitability result</h2>' +
+      statusPill(v.status, v.tone) + "</div>" + gatewaySteps("assess") +
+      '<div class="assess-profile">' +
+        '<div class="assess-profile-badge">' + esc(a.profile) + '</div>' +
+        '<div class="assess-profile-meta">Investor profile' + (a.capped ? ' <span class="assess-capped">· capped for prudence</span>' : "") +
+          '<div class="assess-scores">Capacity ' + a.capacity + "/4 · Tolerance " + a.tolerance + "/4</div></div>" +
+      "</div>" +
+      '<div class="assess-section-h">Suggested asset allocation</div>' +
+      '<div class="alloc-block">' + allocRows + "</div>" +
+      '<div class="assess-section-h">Suitability for ' + esc(p.name) + "</div>" +
+      '<div class="assess-verdict assess-verdict-' + v.tone + '">' + statusPill(v.status, v.tone) +
+        '<p class="assess-reason">' + esc(v.reason) + "</p></div>" + ack +
+      '<p class="gw-note">This assessment is educational and does not recommend buying or selling any security (SEBI RIA boundary).</p>' +
+      '<div class="gw-actions"><button id="assess-redo" class="btn btn-ghost">Redo assessment</button>' +
+      '<button id="assess-proceed" class="btn btn-primary">Continue to summary →</button></div></div>';
+    openModal(body);
+    audit("suitability", "Assessment verdict for “" + p.name + "”: " + v.status + " (" + a.profile + " profile).");
+    var redo = $("assess-redo"); if (redo) redo.addEventListener("click", function () { renderAssessmentForm(p, a.answers); });
+    var proceed = $("assess-proceed");
+    var ackCb = $("assess-ack-cb");
+    function syncProceed() { if (proceed && ackCb) proceed.disabled = !ackCb.checked; }
+    if (ackCb) { ackCb.addEventListener("change", syncProceed); syncProceed(); }
+    if (proceed) proceed.addEventListener("click", function () {
+      if (ackCb && !ackCb.checked) return;
+      openInvestSummary(p);
+    });
+  }
+
+  function openInvestSummary(p, presetQty) {
+    if (!p.registered) { openProduct(p); return; }                 // regulatory gate
+    var lessonOk = !p.requiredLesson || state.completedLessons.indexOf(p.requiredLesson) >= 0;
+    if (!lessonOk) { openProduct(p); return; }
+    if (!state.assessment) { openSuitabilityAssessment(p); return; } // assessment required first
+    var verdict = assessSuitability(p, state.assessment);
+    var price = p.price || 0;
+    var qty = presetQty != null ? presetQty : defaultQty(p);
+    var unit = unitLabel(p);
+    var priceLbl = p.assetClass === "mf" ? "Current NAV" : "Current price";
+    function amtRow() { return fmt(price * qty); }
+    var body = '<div class="gateway"><div class="gw-modal-head"><h2 style="margin:0;">Investment summary</h2>' +
+      gradeBadge(p.riskGrade) + "</div>" + gatewaySteps("summary") +
+      '<div class="gw-summary">' +
+        '<div class="gw-row"><span>Instrument</span><b>' + esc(p.name) + "</b></div>" +
+        '<div class="gw-row"><span>Category</span><b>' + esc(p.category) + "</b></div>" +
+        '<div class="gw-row"><span>' + priceLbl + '</span><b>' + fmt(price) + "</b></div>" +
+        '<div class="gw-row gw-qty-row"><span>' + unit + '</span>' +
+          '<input id="gw-qty" type="number" min="1" step="1" value="' + qty + '" class="gw-qty-input"></div>' +
+        '<div class="gw-row gw-amount"><span>Estimated amount</span><b id="gw-amount">' + amtRow() + "</b></div>" +
+        '<div class="gw-row"><span>Risk</span>' + gradeBadge(p.riskGrade) +
+          ' <span class="gw-risk-lbl">' + esc(({ A: "Low", B: "Medium", C: "High", D: "High", E: "Very High" })[p.riskGrade] || "—") + " risk</span></div>" +
+        '<div class="gw-row"><span>Suitability</span>' + statusPill(verdict.status, verdict.tone) + "</div>" +
+      "</div>" +
+      '<p class="gw-note">NiveshOS is an aggregator — it prepares this order and redirects you to a SEBI-registered broker to complete it. No trade is executed here.</p>' +
+      '<div class="gw-actions"><button id="gw-back" class="btn btn-ghost">← Back</button>' +
+      '<button id="gw-continue" class="btn btn-primary">Choose broker →</button></div></div>';
+    openModal(body);
+    var qEl = $("gw-qty"), amtEl = $("gw-amount");
+    function currentQty() {
+      var v = qEl ? Math.floor(parseFloat(qEl.value)) : qty;
+      return (!v || v < 1) ? 0 : v;
+    }
+    function refresh() {
+      var q = currentQty();
+      if (amtEl) amtEl.textContent = fmt(price * q);
+      var cont = $("gw-continue");
+      var below = price * q < (p.minInvest || 0);
+      if (cont) cont.disabled = q < 1 || below;
+      if (amtEl) amtEl.style.color = below ? "var(--serious)" : "";
+    }
+    if (qEl) qEl.addEventListener("input", refresh);
+    refresh();
+    var bk = $("gw-back"); if (bk) bk.addEventListener("click", function () { showAssessmentResult(p); });
+    var ct = $("gw-continue"); if (ct) ct.addEventListener("click", function () {
+      var q = currentQty();
+      if (q < 1) { toast("Enter a valid quantity."); return; }
+      if (price * q < (p.minInvest || 0)) { toast("Minimum investment is " + fmt(p.minInvest)); return; }
+      openBrokerSelection(p, q);
+    });
+  }
+
+  function openBrokerSelection(p, qty) {
+    var price = p.price || 0, amt = price * qty;
+    var assetLbl = ASSET_LABEL[p.assetClass] || p.category;
+    var cards = (D.brokers || []).map(function (b) {
+      var ok = b.supports.indexOf(p.assetClass) >= 0;
+      var assets = b.supports.map(function (a) {
+        return '<span class="chip broker-asset">' + esc(ASSET_LABEL[a] || a) + "</span>";
+      }).join("");
+      var cta = ok
+        ? '<button class="btn btn-primary broker-continue" type="button" data-broker="' + esc(b.id) + '">Continue with ' + esc(b.name) + "</button>"
+        : '<button class="btn btn-ghost" type="button" disabled>No ' + esc(assetLbl) + " support</button>";
+      return '<div class="broker-card' + (ok ? "" : " broker-card-off") + '">' +
+        '<div class="broker-head"><span class="broker-logo" style="background:' + esc(b.color) + ';">' + esc(b.mark) + "</span>" +
+          '<div><div class="broker-name">' + esc(b.name) + "</div>" +
+          '<div class="broker-platform">' + esc(b.platform) + "</div></div></div>" +
+        '<p class="broker-desc">' + esc(b.desc) + "</p>" +
+        '<div class="broker-assets">' + assets + "</div>" + cta + "</div>";
+    }).join("");
+    var body = '<div class="gateway"><h2 style="margin:0;">Choose your broker</h2>' + gatewaySteps("broker") +
+      '<p class="gw-note">Investing <b>' + fmt(amt) + "</b> in <b>" + esc(p.name) + "</b> (" + qty + " " + unitLabel(p).toLowerCase() + "). Pick where to place it — you'll be redirected to complete KYC & payment.</p>" +
+      '<div class="broker-grid">' + cards + "</div>" +
+      '<div class="gw-actions"><button id="gw-back" class="btn btn-ghost">← Back</button>' +
+      '<button id="gw-close" class="btn btn-ghost">Cancel</button></div></div>';
+    openModal(body);
+    Array.prototype.forEach.call(document.querySelectorAll(".broker-continue"), function (btn) {
+      btn.addEventListener("click", function () {
+        var b = (D.brokers || []).filter(function (x) { return x.id === btn.getAttribute("data-broker"); })[0];
+        if (b) openRedirect(p, qty, b);
+      });
+    });
+    var bk = $("gw-back"); if (bk) bk.addEventListener("click", function () { openInvestSummary(p, qty); });
+    var cl = $("gw-close"); if (cl) cl.addEventListener("click", closeModal);
+  }
+
+  var BROKER_HOST = { zerodha: "kite.zerodha.com", groww: "groww.in", angelone: "angelone.in", upstox: "upstox.com", paytmmoney: "paytmmoney.com" };
+  function brokerDeepLink(b, p, qty) {
+    // Placeholder handoff URL. A real integration swaps this for the broker's
+    // basket/OAuth deep link (or SmartAPI/Kite Connect order). Never navigated
+    // in the demo — shown so the redirect target is explicit and API-ready.
+    var host = (b && (b.host || BROKER_HOST[b.id])) || "broker.example";
+    return "https://" + host + "/invest?symbol=" + encodeURIComponent(p.symbol || p.id) +
+      "&qty=" + qty + "&source=niveshos";
+  }
+
+  function openRedirect(p, qty, b) {
+    var price = p.price || 0, amt = price * qty;
+    var link = brokerDeepLink(b, p, qty);
+    audit("gateway", "Investment gateway: " + qty + " × “" + p.name + "” routed to " + b.name +
+      " — redirect prepared (" + fmt(amt) + ", no order executed).");
+    // Step 1: redirecting spinner
+    openModal('<div class="gateway">' + gatewaySteps("redirect") +
+      '<div class="redirect-screen"><div class="redirect-spinner" style="border-top-color:' + esc(b.color) + ';"></div>' +
+      '<p>Securely handing you off to <b>' + esc(b.name) + "</b>…</p></div></div>");
+    setTimeout(function () {
+      // Bail if the user cancelled the redirect (or navigated) while the spinner
+      // was showing — the spinner is gone from the DOM in that case.
+      if (!document.querySelector(".redirect-spinner")) return;
+      // Step 2: broker landing placeholder (simulated — no real navigation)
+      var body = '<div class="gateway"><div class="broker-landing">' +
+        '<div class="broker-landing-head"><span class="broker-logo lg" style="background:' + esc(b.color) + ';">' + esc(b.mark) + "</span>" +
+          '<div><div class="broker-name">' + esc(b.name) + "</div>" +
+          '<div class="broker-platform">NiveshOS → ' + esc(b.platform) + "</div></div></div>" +
+        gatewaySteps("redirect") +
+        '<div class="gw-summary">' +
+          '<div class="gw-row"><span>Instrument</span><b>' + esc(p.name) + "</b></div>" +
+          '<div class="gw-row"><span>' + unitLabel(p) + '</span><b>' + qty + "</b></div>" +
+          '<div class="gw-row"><span>Price</span><b>' + fmt(price) + "</b></div>" +
+          '<div class="gw-row gw-amount"><span>Amount</span><b>' + fmt(amt) + "</b></div>" +
+        "</div>" +
+        '<p class="gw-note">Order details are pre-filled for <b>' + esc(b.name) + "</b>. The broker completes KYC, collects payment and places the order — NiveshOS does not execute trades. <b>Demo build:</b> the external redirect is simulated, so no real order is placed.</p>" +
+        '<div class="gw-deeplink"><span>Handoff link (demo)</span><code>' + esc(link) + "</code></div>" +
+        '<div class="gw-actions"><button id="gw-open" class="btn btn-primary">Open ' + esc(b.name) + " (demo)</button>" +
+        '<button id="gw-done" class="btn btn-ghost">Back to NiveshOS</button></div></div></div>';
+      openModal(body);
+      var op = $("gw-open"); if (op) op.addEventListener("click", function () {
+        toast("Demo build — external broker redirect is disabled.", "warn");
+      });
+      var dn = $("gw-done"); if (dn) dn.addEventListener("click", closeModal);
+    }, 1200);
   }
 
   /* ============================================================ DISCOVER
      Investment Discovery Marketplace. Reuses the whole product engine:
      catalogue `products` carry a real invest flow already; stocks / non-index
      MFs / gold ETFs are pulled (deduped) from every persona's holdings and
-     wrapped as product-shaped objects so openProduct/suitability/routeOrder
+     wrapped as product-shaped objects so openProduct/suitability/the gateway
      work on them unchanged. Prices/NAVs read live from the same D.products /
      D.holdings the Yahoo + AMFI pipeline populates, so a NAV refresh re-prices
      these cards too. */
@@ -1130,7 +1761,7 @@
   function holdingDesc(h) {
     if (h.assetClass === "equity") return (h.sector || "Listed") + " sector · exchange-listed equity share.";
     if (h.assetClass === "etf") return "Exchange-traded fund backed by physical gold, held in demat.";
-    if (h.assetClass === "mf") return "Diversified " + (h.sector || "equity").toLowerCase() + " mutual fund — priced at daily NAV.";
+    if (h.assetClass === "mf") return (h.sector || "Diversified") + " mutual fund — priced at daily NAV.";
     return h.name;
   }
   // wrap a holding as a catalogue-shaped product so the invest engine accepts it
@@ -1334,7 +1965,7 @@
       var inv = card.querySelector(".disc-invest");
       var cb = card.querySelector(".disc-compare-cb");
       if (det) det.addEventListener("click", function () { openProduct(inst.product); });
-      if (inv) inv.addEventListener("click", function () { openProduct(inst.product); });
+      if (inv) inv.addEventListener("click", function () { openInvestSummary(inst.product); });
       if (cb) cb.addEventListener("change", function () {
         if (cb.checked) discCompare[inst.key] = inst; else delete discCompare[inst.key];
         renderCompareBar();
@@ -1387,12 +2018,14 @@
 
   /* -------------------------------------------------------------- copilot */
   var SUGGEST_CHIPS = [
-    "How healthy is my portfolio?",
-    "Why is my portfolio down today?",
-    "Am I overexposed anywhere?",
-    "Explain REITs simply",
-    "What should I do with idle cash?",
-    "Show my riskiest holding"
+    "Summarize my portfolio",
+    "Why did my portfolio change today?",
+    "What's my biggest sector exposure?",
+    "Which holding contributes most?",
+    "How diversified am I?",
+    "Explain my risk score",
+    "Compare REITs and InvITs",
+    "Explain Gold ETFs"
   ];
   var ADVICE_NOTE = '<div class="advice-note" style="font-size:11px;color:var(--ink-muted);margin-top:8px;border-top:1px solid var(--hairline);padding-top:6px;">ℹ Informational &amp; educational only, not investment advice (SEBI RIA boundary).</div>';
 
@@ -1445,9 +2078,66 @@
     // 9. scam check (before generic)
     if (/quickrich|agro gold|assured|guaranteed|24%/.test(q)) {
       ans = "<b>⛔ Red flag.</b> “QuickRich Agro Gold Scheme” promises <b>24% assured returns</b> and is <b>not found in any SEBI or exchange registry</b>. Guaranteed high returns are a classic fraud marker — NiveshOS blocks it. Verified alternatives are in Discover.";
-    } else if (/(why).*(down|drop|fall|red|lower)|down today|drop today/.test(q)) {
+    } else if (/summar|overview|snapshot|tl;? ?dr|brief.*portfolio|portfolio.*brief/.test(q)) {
+      var td3 = thirtyDay(), mh3 = mergedHoldings(), se3 = sectorExposure()[0], hr3 = healthReport(), al3 = assetAlloc().slice(0, 3);
+      ans = "<b>Portfolio snapshot</b>" +
+        '<ul style="margin:6px 0;padding-left:18px;">' +
+        "<li><b>Net worth</b> " + fmt(netWorth()) + " — " + pct(td3.pct) + " over 30 days</li>" +
+        "<li><b>Mix</b> " + al3.map(function (a) { return esc(a.label) + " " + a.pct.toFixed(0) + "%"; }).join(", ") + "</li>" +
+        "<li><b>Top sector</b> " + esc(se3.sector) + " " + se3.pct.toFixed(1) + "%</li>" +
+        "<li><b>Largest holding</b> " + esc(mh3[0].name) + " (" + fmt(mh3[0].value) + ")</li>" +
+        "<li><b>Health</b> " + hr3.score + "/100 — " + hr3.grade.label + "</li>" +
+        "<li><b>Idle cash</b> " + fmt(idleCash()) + "</li>" +
+        "</ul>Ask me to drill into any line.";
+    } else if (/biggest sector|sector exposure|which sector|largest sector|most.*sector|sector.*(exposure|breakdown|split)/.test(q)) {
+      var se = sectorExposure().slice(0, 3);
+      ans = "<b>Your biggest sector exposure is " + esc(se[0].sector) + " at " + se[0].pct.toFixed(1) + "%</b> of market value. Top three:" +
+        '<ul style="margin:6px 0;padding-left:18px;">' + se.map(function (s) { return "<li><b>" + esc(s.sector) + "</b> — " + s.pct.toFixed(1) + "% (" + fmt(s.value) + ")</li>"; }).join("") + "</ul>" +
+        "Any one sector above ~30% means a single shock — say a rate move for banks — can swing your whole portfolio.";
+    } else if (/contribut|biggest holding|largest holding|largest position|biggest position|top holding|which holding.*(most|biggest)|most of my portfolio/.test(q)) {
+      var mh = mergedHoldings(), topH = mh[0], nwH = netWorth();
+      var shareH = nwH ? topH.value / nwH * 100 : 0;
+      ans = "<b>" + esc(topH.name) + " is your largest position</b> — " + fmt(topH.value) + ", about " + shareH.toFixed(1) + "% of net worth. " +
+        "Next come <b>" + esc(mh[1] ? mh[1].name : "—") + "</b> and <b>" + esc(mh[2] ? mh[2].name : "—") + "</b>. " +
+        "The more one holding dominates, the more your returns ride on that single name.";
+    } else if (/diversif|how spread|well spread|spread out|balanced.*portfolio/.test(q)) {
+      var classesD = diversifiedClassCount(), seD = sectorExposure()[0], ovD = mfOverlap();
+      ans = "<b>You hold " + classesD + " asset class" + (classesD === 1 ? "" : "es") + " above 5% weight</b>" +
+        (classesD >= 4 ? " — a genuinely broad spread." : classesD >= 2 ? " — a fair spread, with room to broaden." : " — that's concentrated in one place.") +
+        " Your largest sector is <b>" + esc(seD.sector) + "</b> at " + seD.pct.toFixed(1) + "%." +
+        (ovD && ovD.pct >= 60 ? " Note: your two funds overlap ~" + ovD.pct + "%, so they count as less diversification than they look." : "") +
+        " The full five-factor read is in <b>Analytics</b>.";
+    } else if (/risk score|risk profile|my risk tier|what'?s my risk\b|explain my risk\b/.test(q)) {
+      if (state.riskProfile) {
+        var unl = { conservative: "T-Bills, SGBs, AAA bonds and index funds", balanced: "those plus REITs, InvITs and higher-yield bonds", aggressive: "the full multi-asset catalogue" };
+        ans = "<b>Your risk profile is " + cap(state.riskProfile) + (state.riskScore != null ? " (score " + state.riskScore + "/24)" : "") + ".</b> " +
+          "It comes from a 6-question quiz on your age, time horizon, income stability, knowledge and how you'd react to a fall. " +
+          "It sets your <b>suitability tier</b> — you can access " + unl[state.riskProfile] + ". Retake it any time in <b>Profile</b>.";
+      } else {
+        ans = "<b>You haven't set a risk profile yet.</b> Take the 6-question quiz in <b>Profile</b> — it scores your capacity and willingness to take risk, then unlocks which products are suitable for you.";
+      }
+    } else if (/(compar|vs|versus|differ).*(reit|invit)|reit.*invit|invit.*reit/.test(q)) {
+      ans = "<b>REITs vs InvITs — same idea, different assets:</b>" +
+        '<ul style="margin:6px 0;padding-left:18px;">' +
+        "<li><b>REIT</b> — owns rent-earning <b>real estate</b> (offices, malls). Distribution ~6–7%, mostly rent.</li>" +
+        "<li><b>InvIT</b> — owns <b>infrastructure</b> (power lines, roads, pipelines). Distribution ~9–11%, but part is return of your own capital, so the headline yield overstates true return.</li>" +
+        "</ul>Both trade on the exchange, both pay regular distributions, and both move with interest rates. InvIT yields look higher largely because of that capital-return quirk.";
+    } else if (/gold etf|goldbees|gold e ?t ?f|gold bees|nippon.*gold|explain gold\b/.test(q)) {
+      var gh = mergedHoldings().filter(function (h) { return h.symbol === "GOLDBEES"; })[0];
+      ans = "<b>A Gold ETF</b> is an exchange-traded fund that holds physical gold for you — one unit tracks the gold price and you buy or sell it like a share, with no locker or making charges." +
+        (gh ? " You hold <b>" + esc(gh.symbol) + "</b> worth " + fmt(gh.value) + " (" + pct(gh.dayChangePct) + " today)." : "") +
+        " Gold often rises when equities fall, so a small slice cushions your portfolio on red days — a diversifier, not a growth engine.";
+    } else if (/(why).*(change|move|down|drop|fall|red|lower|up|gain)|(change|move|down|up) today|today.*(change|move)/.test(q)) {
       var dp = dayPnL(), rk = riskiestHolding();
-      ans = "<b>You're " + pct(dp.pct) + " today (" + fmtSigned(dp.rupees) + ").</b> The two biggest draggers:<ul style=\"margin:6px 0;padding-left:18px;\"><li><b>" + esc(rk.name) + "</b> " + pct(rk.dayChangePct) + "</li><li><b>Financials</b> (HDFC Bank / ICICI Bank) softened ~2%</li></ul>Your gold ETF is up " + pct(0.8) + ", cushioning some of it.";
+      var mhW = mergedHoldings();
+      var topUp = mhW.slice().sort(function (a, b) { return (b.dayChangePct || 0) - (a.dayChangePct || 0); })[0];
+      var dir = dp.pct > 0 ? "up" : dp.pct < 0 ? "down" : "flat";
+      ans = "<b>You're " + pct(dp.pct) + " today (" + fmtSigned(dp.rupees) + ").</b> " +
+        "Biggest drag: <b>" + esc(rk.name) + "</b> " + pct(rk.dayChangePct) + ". " +
+        "Biggest lift: <b>" + esc(topUp.name) + "</b> " + pct(topUp.dayChangePct) + ". " +
+        (dir === "down" ? "Softness in your bank stocks is the usual driver on this book."
+          : dir === "up" ? "Green across most of your larger positions today."
+          : "Gains and losses roughly cancelled out.");
     } else if (/overexpos|concentrat|too much|overweight|risk.*sector|banks?/.test(q)) {
       var ti = topIssuer();
       ans = "<b>Yes — you're bank-heavy.</b> Financials are <b>" + financialsPct().toFixed(1) + "%</b> of your market value (comfort band is ~30%). Your single largest issuer, <b>" + esc(ti.name) + "</b>, is " + ti.pct.toFixed(1) + "% on its own. Spreading into non-financial or non-equity assets would reduce this.";
@@ -1547,6 +2237,798 @@
     }
   }
 
+  /* ========================================================= CAS PDF IMPORT
+     Import a Consolidated Account Statement (CAMS / KFintech, or an NSDL/CDSL
+     depository statement) and merge its holdings into the portfolio.
+       upload PDF (or sample/paste) → extract text → parse (pluggable parser)
+       → resolve each row against the ISIN master → review & correct unknowns
+       → confirm → merge → recompute all analytics.
+     Nothing is written until the user confirms. Existing holdings are never
+     overwritten — a row whose instrument is already held is reported as a
+     duplicate and consolidated, not added again (so it can't double-count).
+     New depository formats plug in via registerCASParser(); everything after
+     parsing (resolution, review, merge) is format-agnostic.                   */
+  var CAS_ACCT = { id: "acc_cas", broker: "CAS Import", depository: "CAMS / NSDL / CDSL", type: "Imported statement" };
+  var CAS_CLASS_OPTS = [
+    { v: "equity", t: "Equity / Stock" }, { v: "mf", t: "Mutual Fund" },
+    { v: "bond", t: "Bond / NCD" }, { v: "reit", t: "REIT" },
+    { v: "invit", t: "InvIT" }, { v: "etf", t: "ETF" }
+  ];
+  var CAS_TYPE_CLASS = { EQ: "equity", EQUITY: "equity", MF: "mf", BND: "bond", BOND: "bond", NCD: "bond", ETF: "etf", REIT: "reit", INVIT: "invit", GOLD: "etf" };
+  var casRows = null;   // parsed + working rows for the open import session
+  var casSourceLabel = "";
+
+  function casNum(s) {
+    if (s == null) return null;
+    var n = parseFloat(String(s).replace(/,/g, "").trim());
+    return isFinite(n) ? n : null;
+  }
+  function ensureCasAccount() {
+    if (!(D.accounts || []).some(function (a) { return a.id === CAS_ACCT.id; })) {
+      var c = { id: CAS_ACCT.id, broker: CAS_ACCT.broker, depository: CAS_ACCT.depository, type: CAS_ACCT.type, lastSync: nowStamp() };
+      (D.accounts = D.accounts || []).push(c);
+    }
+  }
+
+  /* --- parser registry: each parser detects its format and returns raw rows.
+     Add NSDL/CDSL by registering another parser with detect()+parse(); the
+     rest of the pipeline is format-agnostic.                                  */
+  var CAS_PARSERS = [];
+  function registerCASParser(p) { CAS_PARSERS.push(p); }
+  function pickCASParser(text) {
+    for (var i = 0; i < CAS_PARSERS.length; i++) {
+      try { if (CAS_PARSERS[i].detect(text)) return CAS_PARSERS[i]; } catch (e) { /* try next */ }
+    }
+    return CAS_PARSERS[0] || null;
+  }
+  // Generic ISIN-row parser — CAMS/KFintech CAS and depository dumps where each
+  // holding line begins with an ISIN. Prefers 2+-space columns (clean text);
+  // falls back to a whitespace-tolerant regex for messy PDF-extracted text.
+  registerCASParser({
+    id: "isin-rows", label: "CAMS / KFintech / Depository CAS",
+    detect: function (t) { return /IN[EF][0-9A-Z]{9}/.test(t); },
+    parse: function (text) {
+      var rows = casLineRows(text);
+      if (!rows.length) rows = casRegexRows(text);
+      return rows;
+    }
+  });
+  function casLineRows(text) {
+    var rows = [];
+    String(text).split(/\r?\n/).forEach(function (line) {
+      var t = line.replace(/ /g, " ").trim();
+      var m = /^(IN[EF][0-9A-Z]{9,10})\b/.exec(t);
+      if (!m) return;
+      var cols = t.slice(m[0].length).trim().split(/\s{2,}|\t+/).filter(Boolean);
+      rows.push({ isin: m[1], name: cols[0] || "", type: (cols[1] || "").toUpperCase(), qty: casNum(cols[2]), value: casNum(cols[3]), raw: t });
+    });
+    return rows;
+  }
+  function casRegexRows(text) {
+    var rows = [], re = /(IN[EF][0-9A-Z]{9,10})\s+(.+?)\s+(EQ|EQUITY|MF|BND|BOND|NCD|ETF|REIT|INVIT|GOLD)\s+([\d.,]+)\s+([\d.,]+)/gi, m;
+    var flat = String(text).replace(/\s+/g, " ");
+    while ((m = re.exec(flat))) {
+      rows.push({ isin: m[1], name: m[2].trim(), type: m[3].toUpperCase(), qty: casNum(m[4]), value: casNum(m[5]), raw: m[0] });
+    }
+    return rows;
+  }
+
+  /* --- instrument resolution against the ISIN master (+ a name fallback) --- */
+  var _casMaster = null;
+  function instrumentMaster() {
+    if (_casMaster) return _casMaster;
+    var seen = {}, out = [];
+    (D.users || []).forEach(function (u) {
+      (u.holdings || []).forEach(function (h) {
+        if (h.assetClass === "cash" || seen[h.symbol]) return;
+        seen[h.symbol] = 1;
+        out.push({ symbol: h.symbol, name: h.name, assetClass: h.assetClass, sector: h.sector, ltp: h.ltp, dayChangePct: h.dayChangePct });
+      });
+    });
+    _casMaster = out; return out;
+  }
+  function normName(s) {
+    return String(s || "").toLowerCase().replace(/\b(ltd|limited|the|fund|direct|growth|plan|india)\b/g, "").replace(/[^a-z0-9]/g, "");
+  }
+  function resolveInstrument(row) {
+    var map = D.isinMap || {};
+    if (row.isin && map[row.isin]) return map[row.isin];
+    var norm = normName(row.name);
+    if (norm) {
+      var hit = instrumentMaster().filter(function (x) { return normName(x.name) === norm; })[0];
+      if (hit) return { symbol: hit.symbol, name: hit.name, assetClass: hit.assetClass, sector: hit.sector };
+    }
+    return null;
+  }
+  function slugSym(name) { return String(name || "NEW").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 10) || "NEW"; }
+  function symbolHeld(sym) { return allHoldings().some(function (h) { return h.symbol === sym; }); }
+  function ltpForSymbol(sym) {
+    var h = instrumentMaster().filter(function (x) { return x.symbol === sym; })[0];
+    return h ? h.ltp : null;
+  }
+  function dayChangeForSymbol(sym) {
+    var h = instrumentMaster().filter(function (x) { return x.symbol === sym; })[0];
+    return h && h.dayChangePct != null ? h.dayChangePct : 0;
+  }
+
+  /* --- classify the working rows into the four import buckets -------------- */
+  function casPlan() {
+    var plan = { imported: [], duplicates: [], unknown: [], errors: [] };
+    (casRows || []).forEach(function (r) {
+      var qty = r.correctedQty != null ? r.correctedQty : r.qty;
+      if (qty == null || qty <= 0) { r._bucket = "errors"; plan.errors.push(r); return; }
+      var resolved = r.resolved;
+      var cls = r.correctedClass || (resolved && resolved.assetClass) || null;
+      if (!resolved && !r.correctedClass) { r._bucket = "unknown"; plan.unknown.push(r); return; }
+      var symbol = (resolved && resolved.symbol) || slugSym(r.name);
+      r._built = { symbol: symbol, cls: cls, qty: qty, resolved: resolved };
+      if (symbolHeld(symbol)) { r._bucket = "duplicates"; plan.duplicates.push(r); }
+      else { r._bucket = "imported"; plan.imported.push(r); }
+    });
+    return plan;
+  }
+  function casToHolding(r) {
+    var b = r._built, qty = b.qty;
+    var value = r.correctedValue != null ? r.correctedValue : r.value;
+    var price = (value != null && qty) ? value / qty : (ltpForSymbol(b.symbol) || 0);
+    var meta = b.resolved || {};
+    var ltp = ltpForSymbol(b.symbol) || price;
+    return {
+      id: "cas_" + b.symbol + "_" + Math.random().toString(36).slice(2, 7),
+      accountId: CAS_ACCT.id, symbol: b.symbol,
+      name: meta.name || r.name || b.symbol,
+      assetClass: b.cls, sector: meta.sector || "Other",
+      qty: qty, avgPrice: price, ltp: ltp,
+      dayChangePct: dayChangeForSymbol(b.symbol), source: "cas"
+    };
+  }
+
+  /* --- entry point card on the dashboard ---------------------------------- */
+  function renderCasEntry() {
+    var host = $("cas-import"); if (!host) return;
+    var n = (state.importedHoldings || []).length;
+    host.innerHTML =
+      '<div class="cas-entry">' +
+        '<div class="cas-entry-txt"><h3>Import a CAS statement</h3>' +
+          '<p>Upload your CAMS / KFintech or NSDL/CDSL Consolidated Account Statement (PDF) to pull in holdings this app hasn’t seen yet. You review everything before anything is added.' +
+          (n ? " <b>" + n + "</b> holding" + (n === 1 ? "" : "s") + " currently imported." : "") + "</p></div>" +
+        '<button id="cas-import-btn" class="btn btn-primary" type="button">+ Import CAS</button>' +
+      "</div>";
+    var b = $("cas-import-btn"); if (b) b.addEventListener("click", openCasImport);
+  }
+
+  /* --- step 1: upload / sample / paste ------------------------------------ */
+  function openCasImport() {
+    var body = '<div class="cas-modal"><h2 style="margin:0;">Import CAS statement</h2>' +
+      casSteps("upload") +
+      '<p class="gw-note">NiveshOS reads the statement locally in your browser — nothing is uploaded to a server. We support CAMS/KFintech and NSDL/CDSL formats; unrecognised rows are flagged for you to fix before anything merges.</p>' +
+      '<div class="cas-drop" id="cas-drop">' +
+        '<div class="cas-drop-icon" aria-hidden="true">📄</div>' +
+        '<div class="cas-drop-main">Choose your CAS PDF</div>' +
+        '<div class="cas-drop-sub">PDF, or a plain-text / CSV export</div>' +
+        '<input id="cas-file" type="file" accept="application/pdf,.pdf,.txt,.csv,text/plain" hidden>' +
+        '<button id="cas-pick" class="btn btn-primary" type="button">Choose file…</button>' +
+      "</div>" +
+      '<div class="cas-alt"><button id="cas-sample" class="btn btn-ghost" type="button">Use a sample CAS</button>' +
+        '<button id="cas-paste-toggle" class="btn btn-ghost" type="button">Paste text instead</button></div>' +
+      '<div id="cas-paste-wrap" hidden><textarea id="cas-paste" class="cas-paste" rows="6" placeholder="Paste the holdings section of your CAS here…"></textarea>' +
+        '<button id="cas-paste-go" class="btn btn-primary" type="button">Parse pasted text</button></div>' +
+      '<div id="cas-status" class="cas-status" hidden></div>' +
+      '<div class="gw-actions"><button id="cas-cancel" class="btn btn-ghost">Cancel</button></div></div>';
+    openModal(body);
+    var pick = $("cas-pick"), file = $("cas-file");
+    if (pick && file) pick.addEventListener("click", function () { file.click(); });
+    if (file) file.addEventListener("change", function () { if (file.files && file.files[0]) handleCasFile(file.files[0]); });
+    var samp = $("cas-sample");
+    if (samp) samp.addEventListener("click", function () { parseAndReview(D.sampleCAS || "", "Sample CAS (demo)"); });
+    var pt = $("cas-paste-toggle"), pw = $("cas-paste-wrap");
+    if (pt && pw) pt.addEventListener("click", function () { pw.hidden = !pw.hidden; });
+    var pg = $("cas-paste-go");
+    if (pg) pg.addEventListener("click", function () {
+      var v = ($("cas-paste") || {}).value || "";
+      if (v.trim()) parseAndReview(v, "Pasted text"); else casStatus("Paste some statement text first.", "warn");
+    });
+    var c = $("cas-cancel"); if (c) c.addEventListener("click", closeModal);
+  }
+  function casStatus(msg, kind) {
+    var s = $("cas-status"); if (!s) return;
+    s.hidden = false; s.className = "cas-status cas-status-" + (kind || "info"); s.innerHTML = msg;
+  }
+  function handleCasFile(f) {
+    casStatus("Reading “" + esc(f.name) + "”…", "info");
+    var isPdf = /\.pdf$/i.test(f.name) || f.type === "application/pdf";
+    if (!isPdf) {
+      var fr = new FileReader();
+      fr.onload = function () { parseAndReview(String(fr.result || ""), f.name); };
+      fr.onerror = function () { casStatus("Couldn’t read that file.", "warn"); };
+      fr.readAsText(f);
+      return;
+    }
+    var rd = new FileReader();
+    rd.onload = function () {
+      extractPdfText(rd.result).then(function (text) {
+        if (!text || !/IN[EF][0-9A-Z]{9}/.test(text)) {
+          casStatus("Couldn’t read holdings from this PDF (it may be scanned or password-protected). Try <b>Use a sample CAS</b> or paste the holdings text.", "warn");
+          return;
+        }
+        parseAndReview(text, f.name);
+      });
+    };
+    rd.onerror = function () { casStatus("Couldn’t read that PDF.", "warn"); };
+    rd.readAsArrayBuffer(f);
+  }
+
+  /* --- best-effort PDF text extraction (zero-dependency) ------------------
+     Uses the browser-native DecompressionStream to inflate FlateDecode content
+     streams, then pulls text from ( )Tj / [ ]TJ operators. Not a full PDF
+     engine — enough for text-based statements; anything else falls back to the
+     sample / paste path. Always resolves (never rejects).                     */
+  function extractPdfText(buf) {
+    return new Promise(function (resolve) {
+      try {
+        var bytes = new Uint8Array(buf), latin = "";
+        for (var i = 0; i < bytes.length; i++) latin += String.fromCharCode(bytes[i]);
+        var segs = [], re = /stream\r?\n/g, m;
+        while ((m = re.exec(latin))) {
+          var start = m.index + m[0].length, end = latin.indexOf("endstream", start);
+          if (end > start) segs.push(bytes.subarray(start, end));
+        }
+        if (typeof DecompressionStream === "undefined" || !segs.length) { resolve(pdfOps(latin)); return; }
+        var pending = segs.length, decoded = [];
+        segs.forEach(function (s, idx) {
+          casInflate(s).then(function (str) { decoded[idx] = str; })
+            .catch(function () { decoded[idx] = ""; })
+            .then(function () { if (--pending === 0) resolve(pdfOps(decoded.join(" ")) || pdfOps(latin)); });
+        });
+      } catch (e) { resolve(""); }
+    });
+  }
+  function casInflate(u8) {
+    function run(fmt) {
+      var ds = new DecompressionStream(fmt);
+      return new Response(new Blob([u8]).stream().pipeThrough(ds)).arrayBuffer().then(function (ab) {
+        var b = new Uint8Array(ab), s = "";
+        for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+        return s;
+      });
+    }
+    return run("deflate").catch(function () { return run("deflate-raw"); });
+  }
+  function pdfStr(s) { return String(s).replace(/\\([nrt()\\])/g, function (_, c) { return c === "n" ? " " : c === "r" ? " " : c === "t" ? " " : c; }); }
+  function pdfOps(content) {
+    var out = [];
+    content.replace(/\(((?:\\.|[^\\()])*)\)\s*Tj/g, function (_, s) { out.push(pdfStr(s)); return _; });
+    content.replace(/\[((?:[^\]\\]|\\.)*)\]\s*TJ/g, function (_, arr) {
+      var parts = []; arr.replace(/\(((?:\\.|[^\\()])*)\)/g, function (__, s) { parts.push(pdfStr(s)); return __; });
+      out.push(parts.join(""));
+      return _;
+    });
+    return out.join(" ");
+  }
+
+  /* --- step 2: parse + review --------------------------------------------- */
+  function parseAndReview(text, sourceLabel) {
+    casSourceLabel = sourceLabel || "CAS";
+    var parser = pickCASParser(text);
+    var rows = parser ? parser.parse(text) : [];
+    if (!rows.length) {
+      casStatus("No holdings found in that statement. Try <b>Use a sample CAS</b> or paste the holdings table.", "warn");
+      return;
+    }
+    rows.forEach(function (r) { r.resolved = resolveInstrument(r); r.correctedClass = null; r.correctedQty = null; r.correctedValue = null; });
+    casRows = rows;
+    renderCasReview();
+  }
+
+  function casSummaryStrip(plan) {
+    var cells = [
+      { n: plan.imported.length, label: "To import", tone: "good" },
+      { n: plan.duplicates.length, label: "Duplicates", tone: "neutral" },
+      { n: plan.unknown.length, label: "Unknown", tone: "warn" },
+      { n: plan.errors.length, label: "Errors", tone: "critical" }
+    ];
+    return '<div class="cas-summary">' + cells.map(function (c) {
+      return '<div class="cas-sum-cell cas-sum-' + c.tone + '"><div class="cas-sum-n">' + c.n + "</div>" +
+        '<div class="cas-sum-l">' + c.label + "</div></div>";
+    }).join("") + "</div>";
+  }
+
+  function casBucketBadge(r) {
+    if (r._bucket === "errors") return '<span class="badge badge-critical">Error</span>';
+    if (r._bucket === "unknown") return '<span class="badge badge-warn">Unknown</span>';
+    if (r._bucket === "duplicates") return '<span class="badge badge-neutral">Duplicate</span>';
+    return '<span class="badge badge-good">New</span>';
+  }
+  function casFixCell(r, idx) {
+    if (r._bucket === "unknown") {
+      var suggest = CAS_TYPE_CLASS[r.type] || "";
+      var opts = '<option value="">— Skip —</option>' + CAS_CLASS_OPTS.map(function (o) {
+        return '<option value="' + o.v + '"' + (r.correctedClass === o.v ? " selected" : (!r.correctedClass && o.v === suggest ? "" : "")) + ">" + esc(o.t) + "</option>";
+      }).join("");
+      return '<select class="cas-fix-class tv-select" data-idx="' + idx + '" aria-label="Assign asset class">' + opts + "</select>";
+    }
+    if (r._bucket === "errors") {
+      var q = r.correctedQty != null ? r.correctedQty : "";
+      return '<input class="cas-fix-qty gw-qty-input" type="number" min="1" step="any" value="' + q + '" data-idx="' + idx + '" placeholder="Qty" aria-label="Enter quantity">';
+    }
+    return '<span class="cas-fix-none">—</span>';
+  }
+
+  function renderCasReview() {
+    var plan = casPlan();
+    var rowsHtml = casRows.map(function (r, idx) {
+      var qty = r.correctedQty != null ? r.correctedQty : r.qty;
+      var val = r.correctedValue != null ? r.correctedValue : r.value;
+      var nm = (r.resolved && r.resolved.name) || r.name || "—";
+      return "<tr class=\"cas-row cas-row-" + r._bucket + "\">" +
+        "<td><b>" + esc(nm) + "</b><div class=\"cas-isin\">" + esc(r.isin || "") + (r.type ? " · " + esc(r.type) : "") + "</div></td>" +
+        '<td class="num">' + (qty != null ? _inr.format(qty) : "—") + "</td>" +
+        '<td class="num">' + (val != null ? fmt(val) : "—") + "</td>" +
+        "<td>" + casBucketBadge(r) + "</td>" +
+        "<td>" + casFixCell(r, idx) + "</td></tr>";
+    }).join("");
+    var canImport = plan.imported.length > 0;
+    var body = '<div class="cas-modal cas-review"><h2 style="margin:0;">Review — ' + esc(casSourceLabel) + "</h2>" +
+      casSteps("review") +
+      casSummaryStrip(plan) +
+      '<p class="gw-note">Check what will be added. <b>Duplicates</b> are already in your portfolio and are consolidated (never overwritten). Give <b>Unknown</b> rows an asset class, or fix an <b>Error</b> row’s quantity, to include them. Anything left as “Skip” is ignored.</p>' +
+      '<div class="cas-table-wrap"><table class="data-table cas-table"><thead><tr>' +
+        "<th>Instrument</th><th class=\"num\">Qty</th><th class=\"num\">Value</th><th>Status</th><th>Fix</th>" +
+      "</tr></thead><tbody>" + rowsHtml + "</tbody></table></div>" +
+      '<div class="gw-actions"><button id="cas-back" class="btn btn-ghost">← Back</button>' +
+        '<button id="cas-confirm" class="btn btn-primary"' + (canImport ? "" : " disabled") + ">Import " + plan.imported.length + " holding" + (plan.imported.length === 1 ? "" : "s") + "</button></div></div>";
+    openModal(body);
+    Array.prototype.forEach.call(document.querySelectorAll(".cas-fix-class"), function (sel) {
+      sel.addEventListener("change", function () {
+        casRows[parseInt(sel.getAttribute("data-idx"), 10)].correctedClass = sel.value || null;
+        renderCasReview();
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".cas-fix-qty"), function (inp) {
+      inp.addEventListener("change", function () {
+        var v = casNum(inp.value);
+        casRows[parseInt(inp.getAttribute("data-idx"), 10)].correctedQty = (v && v > 0) ? v : null;
+        renderCasReview();
+      });
+    });
+    var bk = $("cas-back"); if (bk) bk.addEventListener("click", openCasImport);
+    var cf = $("cas-confirm"); if (cf) cf.addEventListener("click", confirmCasImport);
+  }
+
+  /* --- step 3: merge + summary -------------------------------------------- */
+  function confirmCasImport() {
+    var plan = casPlan();
+    if (!plan.imported.length) return;                 // nothing new — guard
+    var classesBefore = diversifiedClassCount();
+    var topSecBefore = (sectorExposure().filter(function (s) { return s.sector !== "Diversified"; })[0] || { pct: 0 }).pct;
+    ensureCasAccount();
+    var added = plan.imported.map(casToHolding);
+    state.importedHoldings = (state.importedHoldings || []).concat(added);
+    save("importedHoldings");
+    var classesAfter = diversifiedClassCount();
+    var topSecAfter = (sectorExposure().filter(function (s) { return s.sector !== "Diversified"; })[0] || { pct: 0 }).pct;
+    if (classesAfter > classesBefore || topSecAfter < topSecBefore - 1) {
+      logAlert("diversify", "info", "Portfolio more diversified",
+        (classesAfter > classesBefore ? "Asset-class spread rose to <b>" + classesAfter + "</b> classes" : "Top-sector weight eased to <b>" + topSecAfter.toFixed(1) + "%</b>") +
+        " after the import — concentration risk is lower.", "analytics");
+    }
+    audit("import", "CAS import (" + casSourceLabel + "): " + added.length + " holding(s) merged, " +
+      plan.duplicates.length + " duplicate(s) consolidated, " + plan.unknown.length + " unknown, " + plan.errors.length + " error(s).");
+    // recompute every analytic surface off the new holdings
+    renderDashboard();
+    if (isActive("analytics")) renderAnalytics();
+    if (isActive("invest")) renderInvest();
+    if (isActive("discover")) paintDiscover();
+    renderCasSummary(plan, added);
+    toast("CAS imported — " + added.length + " holding(s) added.", "success");
+  }
+
+  function renderCasSummary(plan, added) {
+    var addedRows = added.length ? added.map(function (h) {
+      return '<div class="cas-added-row"><span><b>' + esc(h.name) + "</b> <span class=\"cas-isin\">" + esc(TYPE_LABEL[h.assetClass] || h.assetClass) + "</span></span>" +
+        '<b class="num">' + fmt(hv(h)) + "</b></div>";
+    }).join("") : '<p style="color:var(--ink-muted);font-size:13px;">No new holdings were added.</p>';
+    var body = '<div class="cas-modal"><div class="gw-modal-head"><h2 style="margin:0;">Import complete</h2>' +
+      '<span class="badge badge-good">✓ Merged</span></div>' +
+      casSteps("done") +
+      casSummaryStrip(plan) +
+      '<div class="cas-added-list">' + addedRows + "</div>" +
+      '<p class="gw-note">Your dashboard, analytics and health score have been recalculated to include these holdings. The import is logged in Trust → Audit trail. Educational demo — no live brokerage data was accessed.</p>' +
+      '<div class="gw-actions"><button id="cas-done" class="btn btn-primary">Done</button></div></div>';
+    openModal(body);
+    var d = $("cas-done"); if (d) d.addEventListener("click", function () { closeModal(); switchPanel("dashboard"); });
+  }
+
+  var CAS_STEPS = [{ k: "upload", t: "Upload" }, { k: "review", t: "Review" }, { k: "done", t: "Merge" }];
+  function casSteps(active) {
+    var reached = true;
+    return '<div class="gw-steps">' + CAS_STEPS.map(function (s) {
+      var isA = s.k === active, cls = isA ? "gw-step active" : (reached ? "gw-step done" : "gw-step");
+      if (isA) reached = false;
+      return '<span class="' + cls + '">' + esc(s.t) + "</span>";
+    }).join('<span class="gw-step-sep">›</span>') + "</div>";
+  }
+
+  /* ====================================================== GOAL-BASED PLANNER
+     Plan financial goals (retirement, emergency fund, education, home, vacation,
+     vehicle) against the live portfolio. Every number is computed from plain,
+     visible formulas — no black box:
+       Target corpus     = today's cost × (1 + inflation)^years   (future value)
+       Suggested mix     = a horizon glide path (long → equity, short → cash)
+       Expected return   = the mix's blended return, shown to the user
+       Monthly SIP       = the annuity payment that closes the shortfall
+       Progress          = what you've earmarked ÷ the target corpus
+     "Use existing portfolio" links a goal to a % of net worth, so progress
+     tracks the real book. Inputs are stored in state.goals; everything else is
+     derived on render so the plan always reflects current prices.             */
+  var GOAL_TYPES = [
+    { type: "retirement", label: "Retirement",      emoji: "🏖️", defTarget: 20000000, defYears: 25 },
+    { type: "emergency",  label: "Emergency Fund",   emoji: "🛟", defTarget: 300000,   defYears: 1 },
+    { type: "education",  label: "Child Education",  emoji: "🎓", defTarget: 4000000,  defYears: 15 },
+    { type: "home",       label: "Home Purchase",    emoji: "🏠", defTarget: 8000000,  defYears: 7 },
+    { type: "vacation",   label: "Vacation",         emoji: "🏝️", defTarget: 400000,   defYears: 2 },
+    { type: "vehicle",    label: "Vehicle",          emoji: "🚗", defTarget: 1200000,  defYears: 3 }
+  ];
+  var GOAL_ALLOC_ORDER = ["Equity", "Debt", "Gold", "Cash"];
+  var GOAL_RET = { Equity: 11, Debt: 7, Gold: 7.5, Cash: 4 };   // assumed annual %, shown to the user
+  var NOW_YEAR = parseInt(TODAY.slice(0, 4), 10);
+
+  function goalMeta(type) { return GOAL_TYPES.filter(function (t) { return t.type === type; })[0] || GOAL_TYPES[0]; }
+  function gid() { return "g_" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4); }
+  function defaultSeedGoals() {
+    // two universally-relevant starters, linked to the portfolio so they're live
+    return [
+      { id: gid(), type: "emergency",  name: "Emergency Fund", targetToday: 300000,   years: 1,  inflation: 6, portfolioPct: 0,  currentSaved: 200000 },
+      { id: gid(), type: "retirement", name: "Retirement",     targetToday: 5000000,  years: 25, inflation: 6, portfolioPct: 25, currentSaved: 0 }
+    ];
+  }
+
+  // horizon glide path — longer to go, more growth; emergency fund stays liquid
+  function goalAlloc(type, years) {
+    if (type === "emergency") return { Equity: 0, Debt: 40, Gold: 0, Cash: 60 };
+    if (years >= 12) return { Equity: 70, Debt: 20, Gold: 7, Cash: 3 };
+    if (years >= 8)  return { Equity: 60, Debt: 28, Gold: 8, Cash: 4 };
+    if (years >= 5)  return { Equity: 50, Debt: 35, Gold: 10, Cash: 5 };
+    if (years >= 3)  return { Equity: 35, Debt: 45, Gold: 12, Cash: 8 };
+    if (years >= 1)  return { Equity: 20, Debt: 50, Gold: 10, Cash: 20 };
+    return { Equity: 0, Debt: 30, Gold: 0, Cash: 70 };
+  }
+  function blendedReturn(a) {
+    var t = 0, w = 0;
+    GOAL_ALLOC_ORDER.forEach(function (k) { t += (a[k] || 0) * (GOAL_RET[k] || 0); w += (a[k] || 0); });
+    return w ? t / w : 0;
+  }
+  function goalSaved(g) {
+    return g.portfolioPct > 0 ? netWorth() * g.portfolioPct / 100 : (g.currentSaved || 0);
+  }
+  function goalCompute(g) {
+    var years = Math.max(0, g.years || 0);
+    var infl = (g.inflation != null ? g.inflation : 6) / 100;
+    var targetCorpus = (g.targetToday || 0) * Math.pow(1 + infl, years);
+    var alloc = goalAlloc(g.type, years);
+    var rAnnual = blendedReturn(alloc);
+    var r = rAnnual / 100;
+    var saved = goalSaved(g);
+    var n = Math.round(years * 12), i = r / 12;
+    var existingFV = saved * Math.pow(1 + i, n);
+    var gap = Math.max(0, targetCorpus - existingFV);
+    var sip = n <= 0 ? gap : (i === 0 ? gap / n : gap * i / (Math.pow(1 + i, n) - 1));
+    // progress = how much of the target your current savings are projected to
+    // cover (their future value ÷ corpus). Consistent with the SIP, which funds
+    // exactly the remaining gap — so 100% projected ⇒ ₹0/month needed.
+    var progress = targetCorpus > 0 ? Math.min(100, existingFV / targetCorpus * 100) : 0;
+    return {
+      years: years, infl: g.inflation != null ? g.inflation : 6, targetToday: g.targetToday || 0,
+      targetCorpus: targetCorpus, alloc: alloc, rAnnual: rAnnual, saved: saved,
+      existingFV: existingFV, gap: gap, sip: sip, progress: progress, n: n, i: i
+    };
+  }
+  function goalStatus(pct) {
+    if (pct >= 100) return { label: "Achieved", status: "good" };
+    if (pct >= 60) return { label: "On track", status: "good" };
+    if (pct >= 30) return { label: "Building", status: "warn" };
+    return { label: "Needs attention", status: "serious" };
+  }
+  function statusColor(s) { return s === "good" ? "var(--good)" : s === "warn" ? "var(--warn)" : "var(--serious)"; }
+
+  /* --- small reusable SVG bits -------------------------------------------- */
+  function goalRing(pct, color, size) {
+    size = size || 92;
+    var sw = 9, r = size / 2 - sw, C = 2 * Math.PI * r, cx = size / 2;
+    var dash = Math.max(0, Math.min(100, pct)) / 100 * C;
+    return '<svg class="goal-ring" viewBox="0 0 ' + size + ' ' + size + '" width="' + size + '" height="' + size + '" role="img" aria-label="Goal progress ' + Math.round(pct) + '%">' +
+      '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="var(--grid)" stroke-width="' + sw + '"></circle>' +
+      '<circle class="goal-ring-fill" cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw +
+        '" stroke-linecap="round" stroke-dasharray="' + dash.toFixed(2) + ' ' + (C - dash).toFixed(2) + '" transform="rotate(-90 ' + cx + ' ' + cx + ')"></circle>' +
+      '<text x="' + cx + '" y="' + (cx + 5) + '" text-anchor="middle" fill="var(--ink)" font-size="16" font-weight="700">' + Math.round(pct) + '%</text></svg>';
+  }
+  function goalAllocBar(alloc, withText) {
+    var out = '<div class="goal-abar">';
+    GOAL_ALLOC_ORDER.forEach(function (k, i) {
+      var w = alloc[k] || 0; if (w <= 0) return;
+      out += '<span class="goal-abar-seg" style="width:' + w + '%;background:' + sv(i) + ';" title="' + esc(k) + ' ' + w + '%">' +
+        (withText && w >= 12 ? '<span class="goal-abar-t">' + w + '%</span>' : '') + '</span>';
+    });
+    return out + '</div>';
+  }
+  function goalAllocLegend() {
+    return '<ul class="goal-alloc-legend">' + GOAL_ALLOC_ORDER.map(function (k, i) {
+      return '<li><span class="dot" style="background:' + sv(i) + ';"></span>' + esc(k) + ' <span class="goal-alloc-r">~' + GOAL_RET[k] + '%</span></li>';
+    }).join("") + '</ul>';
+  }
+
+  /* --- panel + card render ------------------------------------------------ */
+  function renderGoals() {
+    renderGoalsHead();
+    var host = $("goals-grid"); if (!host) return;
+    var goals = state.goals || [];
+    if (!goals.length) {
+      host.innerHTML = '<div class="goals-empty"><div class="goals-empty-icon">🎯</div>' +
+        '<h3>Plan your first goal</h3><p>Turn “₹ someday” into a monthly number. Pick a goal and NiveshOS shows the target corpus, the SIP to get there and a suggested mix.</p>' +
+        '<button id="goals-empty-add" class="btn btn-primary" type="button">+ Add a goal</button></div>';
+      var ea = $("goals-empty-add"); if (ea) ea.addEventListener("click", function () { openGoalForm(null); });
+      return;
+    }
+    host.innerHTML = goals.map(goalCard).join("");
+    Array.prototype.forEach.call(host.querySelectorAll(".goal-card"), function (card) {
+      var id = card.getAttribute("data-goal");
+      card.addEventListener("click", function () { openGoalDetail(id); });
+      var ed = card.querySelector(".goal-edit"), dl = card.querySelector(".goal-del");
+      if (ed) ed.addEventListener("click", function (e) { e.stopPropagation(); openGoalForm(id); });
+      if (dl) dl.addEventListener("click", function (e) { e.stopPropagation(); deleteGoal(id); });
+    });
+  }
+  function renderGoalsHead() {
+    var host = $("goals-summary"); if (!host) return;
+    var goals = state.goals || [];
+    var totalSip = 0, onTrack = 0;
+    goals.forEach(function (g) { var c = goalCompute(g); totalSip += c.sip; if (c.progress >= 60) onTrack++; });
+    host.innerHTML = '<div class="goals-head">' +
+      '<div class="goals-head-stats">' +
+        goalStat(goals.length, "Active goals") +
+        goalStat(onTrack + " / " + goals.length, "On track") +
+        goalStat(fmt(totalSip) + "<span class=\"goals-perm\">/mo</span>", "Total monthly plan") +
+      '</div>' +
+      '<button id="goals-add" class="btn btn-primary" type="button">+ Add goal</button></div>';
+    var a = $("goals-add"); if (a) a.addEventListener("click", function () { openGoalForm(null); });
+  }
+  function goalStat(val, label) {
+    return '<div class="goals-stat"><div class="goals-stat-v">' + val + '</div><div class="goals-stat-l">' + esc(label) + '</div></div>';
+  }
+  function goalCard(g) {
+    var m = goalMeta(g.type), c = goalCompute(g), st = goalStatus(c.progress), col = statusColor(st.status);
+    return '<div class="goal-card" data-goal="' + esc(g.id) + '" tabindex="0" role="button">' +
+      '<div class="goal-card-actions">' +
+        '<button class="goal-edit" type="button" aria-label="Edit goal" title="Edit">✎</button>' +
+        '<button class="goal-del" type="button" aria-label="Delete goal" title="Delete">🗑</button></div>' +
+      '<div class="goal-card-head"><span class="goal-emoji" aria-hidden="true">' + m.emoji + '</span>' +
+        '<div class="goal-card-title"><div class="goal-name">' + esc(g.name) + '</div>' +
+        '<div class="goal-sub">' + fmt(c.targetCorpus) + ' · ' + (c.years > 0 ? c.years + ' yr' + (c.years === 1 ? '' : 's') + ' left' : 'due now') + '</div></div>' +
+        '<span class="badge badge-' + st.status + '">' + st.label + '</span></div>' +
+      '<div class="goal-card-body">' + goalRing(c.progress, col) +
+        '<div class="goal-metrics">' +
+          '<div class="goal-metric"><span>Monthly SIP</span><b>' + fmt(c.sip) + '</b></div>' +
+          '<div class="goal-metric"><span>Saved so far</span><b>' + fmt(c.saved) + '</b></div>' +
+          '<div class="goal-metric"><span>Expected return</span><b>~' + c.rAnnual.toFixed(1) + '%</b></div>' +
+        '</div></div>' +
+      '<div class="goal-alloc-mini"><span class="goal-alloc-lbl">Suggested mix</span>' + goalAllocBar(c.alloc, false) + '</div>' +
+      '</div>';
+  }
+
+  /* --- dashboard summary card --------------------------------------------- */
+  function renderGoalsSummary() {
+    var host = $("goals-summary-dash"); if (!host) return;
+    var goals = state.goals || [];
+    if (!goals.length) {
+      host.innerHTML = '<div class="goals-dash-empty"><div><h3 style="margin:0 0 3px;">Goal planner</h3>' +
+        '<p style="margin:0;font-size:12.5px;color:var(--ink-muted);">Set a target — retirement, a home, an emergency fund — and see the monthly plan.</p></div>' +
+        '<button id="goals-dash-add" class="btn btn-primary" type="button">Plan a goal →</button></div>';
+      var a = $("goals-dash-add"); if (a) a.addEventListener("click", function () { switchPanel("goals"); openGoalForm(null); });
+      return;
+    }
+    var totalSip = goals.reduce(function (s, g) { return s + goalCompute(g).sip; }, 0);
+    var rows = goals.slice(0, 3).map(function (g) {
+      var m = goalMeta(g.type), c = goalCompute(g), st = goalStatus(c.progress), col = statusColor(st.status);
+      return '<div class="goals-dash-row" data-goal="' + esc(g.id) + '">' +
+        '<span class="goals-dash-emoji" aria-hidden="true">' + m.emoji + '</span>' +
+        '<span class="goals-dash-name">' + esc(g.name) + '</span>' +
+        '<span class="goals-dash-track"><span style="width:' + c.progress.toFixed(0) + '%;background:' + col + ';"></span></span>' +
+        '<span class="goals-dash-pct">' + Math.round(c.progress) + '%</span></div>';
+    }).join("");
+    host.innerHTML = '<div class="goals-dash-head"><h3 style="margin:0;">Your goals</h3>' +
+      '<span class="goals-dash-sip">' + fmt(totalSip) + '/mo planned</span></div>' + rows +
+      '<button id="goals-dash-open" class="btn-ghost goals-dash-open" type="button">Open Goal Planner →</button>';
+    Array.prototype.forEach.call(host.querySelectorAll(".goals-dash-row"), function (r) {
+      r.addEventListener("click", function () { switchPanel("goals"); openGoalDetail(r.getAttribute("data-goal")); });
+    });
+    var o = $("goals-dash-open"); if (o) o.addEventListener("click", function () { switchPanel("goals"); });
+  }
+
+  /* --- detail modal: transparent math + interactive projection ------------ */
+  function openGoalDetail(id) {
+    var g = (state.goals || []).filter(function (x) { return x.id === id; })[0];
+    if (!g) return;
+    var m = goalMeta(g.type), c = goalCompute(g), st = goalStatus(c.progress), col = statusColor(st.status);
+    var steps = [
+      "Today’s cost of this goal: <b>" + fmt(c.targetToday) + "</b>",
+      "Grown by <b>" + c.infl + "% inflation</b> for <b>" + c.years + " year" + (c.years === 1 ? "" : "s") + "</b> → target corpus <b>" + fmt(c.targetCorpus) + "</b><span class=\"goal-formula\">" + fmt(c.targetToday) + " × (1 + " + (c.infl / 100).toFixed(2) + ")<sup>" + c.years + "</sup></span>",
+      "The suggested mix earns about <b>" + c.rAnnual.toFixed(1) + "%</b> a year (blended, below)",
+      "You’ve earmarked <b>" + fmt(c.saved) + "</b>" + (g.portfolioPct > 0 ? " (" + g.portfolioPct + "% of your ₹" + _inr.format(Math.round(netWorth())) + " portfolio)" : "") + " → grows to <b>" + fmt(c.existingFV) + "</b>",
+      "Shortfall to fund: <b>" + fmt(c.gap) + "</b>",
+      "Invest <b>" + fmt(c.sip) + "/month</b> for " + c.years + " year" + (c.years === 1 ? "" : "s") + " to close it<span class=\"goal-formula\">SIP = gap × i ÷ ((1+i)<sup>n</sup> − 1), i = " + c.rAnnual.toFixed(1) + "%/12, n = " + c.n + "</span>"
+    ];
+    var allocRows = GOAL_ALLOC_ORDER.filter(function (k) { return c.alloc[k] > 0; }).map(function (k, i) {
+      var idx = GOAL_ALLOC_ORDER.indexOf(k);
+      return '<div class="alloc-row"><span class="alloc-lbl">' + esc(k) + '</span>' +
+        '<span class="alloc-track"><span style="width:' + c.alloc[k] + '%;background:' + sv(idx) + ';"></span></span>' +
+        '<span class="alloc-pct">' + c.alloc[k] + '%</span></div>';
+    }).join("");
+    var body = '<div class="goal-detail"><div class="gw-modal-head"><h2 style="margin:0;">' + m.emoji + ' ' + esc(g.name) + '</h2>' +
+      '<span class="badge badge-' + st.status + '">' + st.label + '</span></div>' +
+      '<div class="goal-detail-top">' + goalRing(c.progress, col, 116) +
+        '<div class="goal-detail-kpis">' +
+          goalKpi("Target corpus", fmt(c.targetCorpus), "inflation-adjusted") +
+          goalKpi("Monthly SIP", fmt(c.sip), "to stay on plan") +
+          goalKpi("Years remaining", c.years + "", "at " + c.infl + "% inflation") +
+          goalKpi("Saved so far", fmt(c.saved), "projected to " + fmt(c.existingFV)) +
+        '</div></div>' +
+      '<div class="goal-section-h">Projected growth</div>' +
+      '<div id="goal-projection" class="goal-projection"></div>' +
+      '<div class="goal-section-h">How this is calculated</div>' +
+      '<ol class="goal-steps">' + steps.map(function (s) { return '<li>' + s + '</li>'; }).join("") + '</ol>' +
+      '<div class="goal-section-h">Suggested asset allocation</div>' +
+      '<div class="alloc-block">' + allocRows + '</div>' + goalAllocLegend() +
+      '<p class="gw-note">A horizon-based suggestion for education — longer goals lean to growth, near-term goals to safety. Not personalised investment advice (SEBI RIA boundary).</p>' +
+      '<div class="gw-actions"><button id="goal-explore" class="btn btn-ghost">Explore investments →</button>' +
+        '<button id="goal-edit-d" class="btn btn-ghost">Edit</button>' +
+        '<button id="goal-close" class="btn btn-primary">Done</button></div></div>';
+    openModal(body);
+    renderGoalProjection($("goal-projection"), c);
+    var ex = $("goal-explore"); if (ex) ex.addEventListener("click", function () { closeModal(); switchPanel("discover"); });
+    var ed = $("goal-edit-d"); if (ed) ed.addEventListener("click", function () { openGoalForm(id); });
+    var cl = $("goal-close"); if (cl) cl.addEventListener("click", closeModal);
+  }
+  function goalKpi(label, value, sub) {
+    return '<div class="goal-kpi"><div class="goal-kpi-l">' + esc(label) + '</div><div class="goal-kpi-v">' + value + '</div>' +
+      '<div class="goal-kpi-s">' + esc(sub) + '</div></div>';
+  }
+
+  // corpus growth year-by-year (existing savings compounding + SIP annuity),
+  // with the target line — interactive crosshair tooltip.
+  function renderGoalProjection(container, c) {
+    if (!container) return;
+    var yrs = Math.max(1, c.years);
+    var pts = [];
+    for (var k = 0; k <= yrs; k++) {
+      var months = k * 12;
+      var fv = c.saved * Math.pow(1 + c.i, months) + (c.i === 0 ? c.sip * months : c.sip * (Math.pow(1 + c.i, months) - 1) / c.i);
+      pts.push({ year: NOW_YEAR + k, k: k, v: fv });
+    }
+    var W = 640, H = 200, pL = 8, pR = 8, pT = 14, pB = 22, iw = W - pL - pR, ih = H - pT - pB;
+    var maxV = Math.max(c.targetCorpus, pts[pts.length - 1].v) * 1.08, minV = 0;
+    function X(k) { return pL + (k / yrs) * iw; }
+    function Y(v) { return pT + (1 - (v - minV) / (maxV - minV)) * ih; }
+    var line = pts.map(function (p) { return X(p.k).toFixed(1) + "," + Y(p.v).toFixed(1); });
+    var area = "M" + X(0) + "," + (pT + ih) + " L" + line.join(" L") + " L" + X(yrs) + "," + (pT + ih) + " Z";
+    var grid = "";
+    for (var gg = 0; gg <= 3; gg++) { var gy = pT + gg / 3 * ih; grid += '<line x1="' + pL + '" y1="' + gy + '" x2="' + (W - pR) + '" y2="' + gy + '" stroke="var(--grid)" stroke-width="1"></line>'; }
+    var ty = Y(c.targetCorpus);
+    var dots = pts.map(function (p) {
+      return '<circle class="goal-proj-dot" data-tip="<b>' + p.year + '</b><br>Corpus ' + fmt(p.v) + '" cx="' + X(p.k).toFixed(1) + '" cy="' + Y(p.v).toFixed(1) + '" r="7" fill="transparent"></circle>' +
+        '<circle cx="' + X(p.k).toFixed(1) + '" cy="' + Y(p.v).toFixed(1) + '" r="2.4" fill="var(--s1)"></circle>';
+    }).join("");
+    container.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="none" role="img" aria-label="Projected corpus growth">' +
+      grid +
+      '<line x1="' + pL + '" y1="' + ty.toFixed(1) + '" x2="' + (W - pR) + '" y2="' + ty.toFixed(1) + '" stroke="var(--good)" stroke-width="1.5" stroke-dasharray="5 4"></line>' +
+      '<text x="' + (W - pR) + '" y="' + (ty - 5).toFixed(1) + '" text-anchor="end" fill="var(--good)" font-size="10.5">Target ' + fmt(c.targetCorpus) + '</text>' +
+      '<path d="' + area + '" fill="var(--s1)" opacity="0.08"></path>' +
+      '<path class="anim-line" d="M' + line.join(" L") + '" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"></path>' +
+      dots + '</svg>' +
+      '<div class="goal-proj-axis"><span>' + NOW_YEAR + '</span><span>Projected corpus vs target</span><span>' + (NOW_YEAR + yrs) + '</span></div>';
+    wireTips(container);
+  }
+
+  /* --- add / edit form ---------------------------------------------------- */
+  function openGoalForm(id) {
+    var editing = !!id;
+    var g = editing ? (state.goals || []).filter(function (x) { return x.id === id; })[0] : null;
+    if (editing && !g) return;
+    var draft = g ? {
+      type: g.type, name: g.name, targetToday: g.targetToday, years: g.years,
+      inflation: g.inflation != null ? g.inflation : 6, portfolioPct: g.portfolioPct || 0, currentSaved: g.currentSaved || 0
+    } : { type: "retirement", name: "", targetToday: null, years: null, inflation: 6, portfolioPct: 0, currentSaved: 0 };
+    goalFormBody(draft, editing, id);
+  }
+  function goalFormBody(d, editing, id) {
+    var typeChips = GOAL_TYPES.map(function (t) {
+      return '<button type="button" class="goal-type-chip' + (d.type === t.type ? " active" : "") + '" data-type="' + t.type + '">' +
+        '<span aria-hidden="true">' + t.emoji + '</span>' + esc(t.label) + '</button>';
+    }).join("");
+    var meta = goalMeta(d.type);
+    var name = d.name || (editing ? "" : meta.label);
+    var target = d.targetToday != null ? d.targetToday : meta.defTarget;
+    var years = d.years != null ? d.years : meta.defYears;
+    var linked = d.portfolioPct > 0;
+    var body = '<div class="goal-form"><h2 style="margin:0 0 4px;">' + (editing ? "Edit goal" : "New goal") + '</h2>' +
+      '<div class="goal-type-grid">' + typeChips + '</div>' +
+      '<label class="goal-field"><span>Goal name</span><input id="gf-name" type="text" value="' + esc(name) + '" placeholder="e.g. Retirement"></label>' +
+      '<div class="goal-field-row">' +
+        '<label class="goal-field"><span>Target amount (today’s cost)</span><input id="gf-target" type="number" min="0" step="1000" value="' + target + '"></label>' +
+        '<label class="goal-field goal-field-sm"><span>Years to goal</span><input id="gf-years" type="number" min="0" step="1" value="' + years + '"></label>' +
+      '</div>' +
+      '<label class="goal-field goal-field-sm"><span>Inflation assumption (%/yr)</span><input id="gf-infl" type="number" min="0" step="0.5" value="' + d.inflation + '"></label>' +
+      '<div class="goal-fund">' +
+        '<label class="goal-fund-opt"><input type="radio" name="gf-fund" value="portfolio"' + (linked ? " checked" : "") + '> Fund from my portfolio ' +
+          '<input id="gf-pct" type="number" min="0" max="100" step="1" value="' + (linked ? d.portfolioPct : 20) + '" class="goal-pct-input"> % of ₹' + _inr.format(Math.round(netWorth())) + '</label>' +
+        '<label class="goal-fund-opt"><input type="radio" name="gf-fund" value="manual"' + (linked ? "" : " checked") + '> I’ve saved ' +
+          '<input id="gf-saved" type="number" min="0" step="1000" value="' + (d.currentSaved || 0) + '" class="goal-saved-input"> already</label>' +
+      '</div>' +
+      '<p id="gf-err" class="assess-err" hidden>Give the goal a name, a target above ₹0 and a year count.</p>' +
+      '<div class="gw-actions">' + (editing ? '<button id="gf-delete" class="btn btn-danger">Delete</button>' : '<button id="gf-cancel" class="btn btn-ghost">Cancel</button>') +
+        '<button id="gf-save" class="btn btn-primary">' + (editing ? "Save changes" : "Create goal") + '</button></div></div>';
+    openModal(body);
+    Array.prototype.forEach.call(document.querySelectorAll(".goal-type-chip"), function (ch) {
+      ch.addEventListener("click", function () {
+        // switch type, refresh preset name/target/years if untouched-ish
+        var t = ch.getAttribute("data-type"), tm = goalMeta(t);
+        var cur = collectGoalForm();
+        goalFormBody({ type: t, name: (cur.name && cur.name !== meta.label) ? cur.name : tm.label,
+          targetToday: cur.targetToday || tm.defTarget, years: cur.years != null ? cur.years : tm.defYears,
+          inflation: cur.inflation, portfolioPct: cur.portfolioPct, currentSaved: cur.currentSaved }, editing, id);
+      });
+    });
+    var sv2 = $("gf-save"); if (sv2) sv2.addEventListener("click", function () { saveGoal(editing, id, d.type); });
+    var cn = $("gf-cancel"); if (cn) cn.addEventListener("click", closeModal);
+    var dl = $("gf-delete"); if (dl) dl.addEventListener("click", function () { deleteGoal(id); });
+  }
+  function currentGoalType() {
+    var a = document.querySelector(".goal-type-chip.active");
+    return a ? a.getAttribute("data-type") : "retirement";
+  }
+  function collectGoalForm() {
+    function val(idv) { var e = $(idv); return e ? e.value : ""; }
+    var fund = (document.querySelector('input[name="gf-fund"]:checked') || {}).value;
+    return {
+      type: currentGoalType(),
+      name: (val("gf-name") || "").trim(),
+      targetToday: parseFloat(val("gf-target")) || 0,
+      years: val("gf-years") === "" ? null : Math.max(0, parseInt(val("gf-years"), 10) || 0),
+      inflation: parseFloat(val("gf-infl")),
+      portfolioPct: fund === "portfolio" ? (parseFloat(val("gf-pct")) || 0) : 0,
+      currentSaved: fund === "manual" ? (parseFloat(val("gf-saved")) || 0) : 0
+    };
+  }
+  function saveGoal(editing, id, fallbackType) {
+    var f = collectGoalForm();
+    if (isNaN(f.inflation)) f.inflation = 6;
+    if (!f.name || f.targetToday <= 0 || f.years == null) { var e = $("gf-err"); if (e) e.hidden = false; return; }
+    if (f.portfolioPct <= 0 && f.currentSaved < 0) f.currentSaved = 0;
+    if (editing) {
+      state.goals = (state.goals || []).map(function (g) {
+        return g.id === id ? { id: id, type: f.type, name: f.name, targetToday: f.targetToday, years: f.years, inflation: f.inflation, portfolioPct: f.portfolioPct, currentSaved: f.currentSaved } : g;
+      });
+      audit("goal", "Goal updated: “" + f.name + "” — target " + fmt(f.targetToday) + " in " + f.years + "y.");
+    } else {
+      state.goals = (state.goals || []).concat([{ id: gid(), type: f.type, name: f.name, targetToday: f.targetToday, years: f.years, inflation: f.inflation, portfolioPct: f.portfolioPct, currentSaved: f.currentSaved }]);
+      audit("goal", "Goal created: “" + f.name + "” — target " + fmt(f.targetToday) + " in " + f.years + "y.");
+    }
+    save("goals");
+    closeModal();
+    if (isActive("goals")) renderGoals();
+    renderGoalsSummary();
+    toast(editing ? "Goal updated." : "Goal added — " + f.name, "success");
+  }
+  function deleteGoal(id) {
+    var g = (state.goals || []).filter(function (x) { return x.id === id; })[0];
+    state.goals = (state.goals || []).filter(function (x) { return x.id !== id; });
+    save("goals");
+    if (g) audit("goal", "Goal removed: “" + g.name + "”.");
+    closeModal();
+    if (isActive("goals")) renderGoals();
+    renderGoalsSummary();
+    toast("Goal removed.", "warn");
+  }
+
   /* ============================================================ MODAL / TOAST */
   function openModal(html) {
     var root = $("modal-root"); if (!root) return;
@@ -1567,7 +3049,7 @@
   }
 
   /* ============================================================ ROUTER */
-  var PANELS = ["dashboard", "discover", "analytics", "learn", "profile", "invest", "copilot", "trust"];
+  var PANELS = ["dashboard", "discover", "analytics", "learn", "profile", "invest", "goals", "copilot", "trust"];
   var current = "dashboard";
   function isActive(name) { return current === name; }
   function renderPanel(name) {
@@ -1578,6 +3060,7 @@
       case "learn": renderLearn(); break;
       case "profile": renderProfile(); break;
       case "invest": renderInvest(); break;
+      case "goals": renderGoals(); break;
       case "copilot": renderCopilot(); break;
       case "trust": renderTrust(); break;
     }
@@ -1614,6 +3097,14 @@
     });
     var lo = $("logout-btn");
     if (lo) lo.addEventListener("click", logout);
+    var bell = $("notif-bell");
+    if (bell) bell.addEventListener("click", function () {
+      var panel = $("notif-panel");
+      if (panel && !panel.hidden) closeNotifCenter(); else openNotifCenter();
+    });
+    var scrim = $("notif-scrim");
+    if (scrim) scrim.addEventListener("click", closeNotifCenter);
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeNotifCenter(); });
     // delegated: "open the X lesson" links inside chat bubbles or modals
     document.addEventListener("click", function (e) {
       var a = e.target && e.target.closest ? e.target.closest("[data-lesson-link]") : null;
@@ -1703,8 +3194,10 @@
   /* ============================================================ BOOT */
   function finishBoot() {
     if (D.investor) D.investor.riskProfile = state.riskProfile;
+    if ((state.importedHoldings || []).length) ensureCasAccount();  // restore synthetic CAS account after reload
     renderAll();
     switchPanel("dashboard");
+    refreshAlertsUI();
     if (!_rendered) {
       _rendered = true;
       window.dispatchEvent(new CustomEvent("niveshos:rendered", {}));
