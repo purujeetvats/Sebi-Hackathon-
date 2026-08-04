@@ -65,5 +65,5 @@ Center the experience on an AI copilot (LLM-driven, vernacular multi-language) t
 ### Strategy 5 — "Trust Fabric": Compliance-Native Investor Protection Platform
 Lead with trust infrastructure. Every product listed carries a standardized machine-readable "risk label" (like nutrition labels): issuer quality, liquidity score, complexity grade, suitability tier. Verified-only universe (scrapes SEBI/exchange registries to block unregistered schemes), fraud/dark-pattern alerts, consent-ledger for data sharing (DPDP-aligned), immutable audit trail of every suitability check and disclosure shown. Aggregation + investing features built inside this trust envelope. **Differentiator:** strongest alignment with SEBI's mandate; positions app as public-good infrastructure, judges from regulator will resonate.
 
-### Recommended Hybrid (for later discussion)
-Likely winner = Strategy 1 (aggregation core) + Strategy 4 (AI copilot UX) + suitability gates from Strategy 2, with Strategy 3's open-rails architecture underneath. Strategies map to modules, not mutually exclusive apps.
+### Hybrid Version(for later discussion)
+Strategy 1 (aggregation core) + Strategy 4 (AI copilot UX) + suitability gates from Strategy 2, with Strategy 3's open-rails architecture underneath. Strategies map to modules, not mutually exclusive apps.
