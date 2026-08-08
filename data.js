@@ -245,7 +245,7 @@ const NIVESH_DATA = {
 
   /* 5 education modules (shared) ------------------------------------------ */
   lessons: [
-    { id: "reit", title: "REITs", emoji: "🏢", minutes: 4,
+    { id: "reit", title: "REITs", icon: "building", minutes: 4,
       sections: [
         { h: "What is a REIT?", p: "A Real Estate Investment Trust owns income-producing property — think office parks and malls — and lists on the exchange like a share. Buying one unit makes you a tiny landlord without needing crores for a building." },
         { h: "Where the return comes from", p: "REITs must pay out at least 90% of their rental income to unitholders. So you earn a regular 'distribution' (like rent) plus any rise in the unit price. It behaves part-bond, part-equity." },
@@ -256,7 +256,7 @@ const NIVESH_DATA = {
         { q: "At least how much income must a REIT distribute to unitholders?", options: ["10%", "50%", "90%", "None — it's optional"], answer: 2 },
         { q: "REIT prices tend to fall when…", options: ["Interest rates rise", "Rents rise", "More tenants sign up", "The unit splits"], answer: 0 }
       ] },
-    { id: "invit", title: "InvITs", emoji: "🔌", minutes: 4,
+    { id: "invit", title: "InvITs", icon: "zap", minutes: 4,
       sections: [
         { h: "What is an InvIT?", p: "An Infrastructure Investment Trust is the REIT idea applied to infrastructure — power lines, highways, gas pipelines. You pool money with others to own toll/tariff-earning assets and collect the cash they throw off." },
         { h: "Why the yields look high", p: "Regulated infra assets produce steady, contracted cash flows, so InvITs often distribute 9–11%. But part of that payout is return of capital, not pure profit — the asset slowly depletes, so headline yield overstates true return." },
@@ -267,7 +267,7 @@ const NIVESH_DATA = {
         { q: "Why can InvIT distribution yields look unusually high?", options: ["They never pay tax", "Part of the payout is return of capital", "They are risk-free", "They double every year"], answer: 1 },
         { q: "A key driver of an InvIT's cash flow is…", options: ["The cricket season", "Usage of the underlying asset (e.g. traffic)", "The founder's mood", "Gold prices"], answer: 1 }
       ] },
-    { id: "bonds", title: "Corporate Bonds", emoji: "📜", minutes: 4,
+    { id: "bonds", title: "Corporate Bonds", icon: "fileText", minutes: 4,
       sections: [
         { h: "Lending, not owning", p: "A bond is a loan you give to a company. It promises a fixed coupon (interest) on set dates and returns your principal at maturity. Unlike a share, you don't own the business — you're its lender." },
         { h: "Rating = safety grade", p: "Agencies grade credit quality: AAA is safest, then AA, A, and lower. A higher coupon usually means higher risk. A AAA bond at 8% and an AA- bond at 9.4% are not the same bet — the extra 1.4% is the price of extra default risk." },
@@ -278,7 +278,7 @@ const NIVESH_DATA = {
         { q: "Which rating is the safest?", options: ["AA-", "A", "AAA", "BBB"], answer: 2 },
         { q: "A bond paying a higher coupon usually carries…", options: ["Lower risk", "Higher risk", "No risk", "Guaranteed returns"], answer: 1 }
       ] },
-    { id: "sgb", title: "Sovereign Gold Bonds", emoji: "🪙", minutes: 3,
+    { id: "sgb", title: "Sovereign Gold Bonds", icon: "coins", minutes: 3,
       sections: [
         { h: "Gold without the locker", p: "A Sovereign Gold Bond (SGB) is issued by the RBI and tracks the price of gold — but you hold it in your demat, so there's no making charge, no purity worry, and no storage risk." },
         { h: "You get paid to wait", p: "On top of gold's price movement, SGBs pay 2.5% interest a year on your invested amount. Held to the 8-year maturity, the capital gain from gold is tax-free — an edge physical gold and ETFs don't have." },
@@ -289,7 +289,7 @@ const NIVESH_DATA = {
         { q: "Besides gold's price, an SGB pays…", options: ["Nothing extra", "2.5% annual interest", "Monthly dividends", "A lottery"], answer: 1 },
         { q: "A key drawback of SGBs is…", options: ["Making charges", "A long lock-in period", "Purity risk", "Storage cost"], answer: 1 }
       ] },
-    { id: "diversification", title: "Diversification & Overlap", emoji: "⚖️", minutes: 4,
+    { id: "diversification", title: "Diversification & Overlap", icon: "scale", minutes: 4,
       sections: [
         { h: "Don't put all eggs in one basket", p: "Diversification spreads money across assets that don't all move together, so one bad bet doesn't sink you. Concentration is the opposite — and it's the single most common retail mistake." },
         { h: "The hidden overlap trap", p: "Owning two large-cap funds feels diversified, but if both hold the same HDFC Bank, ICICI Bank and Reliance, you've simply doubled the same bets. 'Fund overlap' means less real diversification than the number of funds suggests." },

@@ -35,6 +35,39 @@
   var SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
   function sv(i) { return "var(" + SERIES[i % SERIES.length] + ")"; }
 
+  /* ---- inline SVG icon set (Lucide-derived, stroke, currentColor) --------
+     Replaces emoji app-wide so glyphs read as one system with the nav icons.
+     Sized in `em` so each icon inherits its container's font-size. Add a name
+     here and reference it via ic("name"). */
+  var ICONS = {
+    check:    '<path d="M20 6 9 17l-5-5"/>',
+    x:        '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    refresh:  '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    warning:  '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    info:     '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    ban:      '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+    lock:     '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    search:   '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    file:     '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/>',
+    fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+    target:   '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+    pencil:   '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    trash:    '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/>',
+    zap:      '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+    coins:    '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+    scale:    '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>',
+    palm:     '<path d="M13 8c0-2.76-2.46-5-5.5-5S2 5.24 2 8h2l1-1 1 1h4"/><path d="M13 7.14A5.82 5.82 0 0 1 16.5 6c3.04 0 5.5 2.24 5.5 5h-3l-1-1-1 1h-3"/><path d="M5.89 9.71c-2.15 2.15-2.3 5.47-.35 7.43l4.24-4.25.71-.71 2.12-2.12c-1.95-1.96-5.27-1.8-7.42.35z"/><path d="M11 15.5c.5 2.5-.17 4.5-1 6.5h4c2-5.5-.5-12-1-14"/>',
+    lifebuoy: '<circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/><circle cx="12" cy="12" r="4"/>',
+    grad:     '<path d="M21.42 10.92a1 1 0 0 0-.02-1.84L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.84l8.57 3.9a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/>',
+    home:     '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    umbrella: '<path d="M22 12a10.06 10.06 0 0 0-20 0z"/><path d="M12 12v8a2 2 0 0 0 4 0"/><path d="M12 2v1"/>',
+    car:      '<path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 1 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/>'
+  };
+  function ic(name, cls) {
+    return '<svg class="ic' + (cls ? " " + cls : "") + '" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">' + (ICONS[name] || "") + "</svg>";
+  }
+
   /* ------------------------------------------------------------- state
      Persistence is namespaced per signed-in user: niveshos.u.<id>.<key>.
      `theme` is global; the active session id lives under niveshos.session.  */
@@ -560,17 +593,18 @@
      map to badge classes: serious=High, warn=Medium, info=Low. Read-state and
      the event log persist per-user in localStorage. No network, no advice —
      purely descriptive signals off the same numbers the analytics panel uses. */
+  function alertIcon(p) { return '<svg class="alert-svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">' + p + "</svg>"; }
   var ALERT_META = {
-    concentration: { label: "Concentration", icon: "▲" },
-    drop:          { label: "Drawdown",      icon: "↓" },
-    price:         { label: "Price move",    icon: "⇅" },
-    dividend:      { label: "Distribution",  icon: "◆" },
-    diversify:     { label: "Diversified",   icon: "⚖" },
-    overlap:       { label: "Fund overlap",  icon: "⚙" },
-    cash:          { label: "Idle cash",     icon: "○" },
-    consolidated:  { label: "Consolidated",  icon: "✓" },
-    nav:           { label: "NAV refresh",   icon: "↻" },
-    data:          { label: "Data source",   icon: "◈" }
+    concentration: { label: "Concentration", icon: alertIcon('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>') },
+    drop:          { label: "Drawdown",      icon: alertIcon('<path d="M22 17 13.5 8.5 8.5 13.5 2 7"/><path d="M16 17h6v-6"/>') },
+    price:         { label: "Price move",    icon: alertIcon('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>') },
+    dividend:      { label: "Distribution",  icon: alertIcon('<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>') },
+    diversify:     { label: "Diversified",   icon: alertIcon('<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>') },
+    overlap:       { label: "Fund overlap",  icon: alertIcon('<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>') },
+    cash:          { label: "Idle cash",     icon: alertIcon('<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>') },
+    consolidated:  { label: "Consolidated",  icon: alertIcon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/>') },
+    nav:           { label: "NAV refresh",   icon: alertIcon('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>') },
+    data:          { label: "Data source",   icon: alertIcon('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>') }
   };
   var LEVEL_RANK = { serious: 0, warn: 1, info: 2 };
   var PRIORITY_LABEL = { serious: "High", warn: "Medium", info: "Low" };
@@ -744,7 +778,7 @@
         '<div><h2>Notifications</h2><span class="notif-sub">' + all.filter(function (a) { return !a.read; }).length + ' unread · ' + all.length + ' total</span></div>' +
         '<div class="notif-head-actions">' +
           '<button class="btn-ghost" id="notif-mark-all" type="button">Mark all read</button>' +
-          '<button class="notif-close" id="notif-close" type="button" aria-label="Close">✕</button>' +
+          '<button class="notif-close" id="notif-close" type="button" aria-label="Close">' + ic("x") + "</button>" +
         "</div>" +
       "</div>" +
       '<div class="notif-config">' +
@@ -905,7 +939,7 @@
       '<span class="ds-dot" style="color:' + (live ? "var(--good)" : "var(--ink-muted)") + ';">●</span> ' +
       '<span class="ds-label">' + (live ? "Real market data" : "Offline snapshot") + '</span>' +
       '<span class="ds-meta">Prices: NSE via Yahoo Finance · NAVs: AMFI (mfapi.in) · as of ' + esc(asOf) + '</span>' +
-      '<button id="refresh-navs" class="btn-ghost ds-refresh" type="button" title="Fetch the latest mutual-fund NAVs live from AMFI">↻ Refresh NAVs</button>';
+      '<button id="refresh-navs" class="btn-ghost ds-refresh" type="button" title="Fetch the latest mutual-fund NAVs live from AMFI">' + ic("refresh") + " Refresh NAVs</button>";
     var btn = $("refresh-navs");
     if (btn) btn.addEventListener("click", refreshLiveNavs);
   }
@@ -915,7 +949,7 @@
     if (typeof fetch !== "function") { toast("Live refresh needs a modern browser.", "warn"); return; }
     _refreshing = true;
     var btn = $("refresh-navs");
-    if (btn) { btn.disabled = true; btn.textContent = "↻ Refreshing…"; }
+    if (btn) { btn.disabled = true; btn.innerHTML = ic("refresh") + " Refreshing…"; }
     // every AMFI-coded instrument we hold or list (funds + index fund)
     var codes = {};
     (D.holdings || []).forEach(function (h) { if (h.schemeCode) codes[h.schemeCode] = 1; });
@@ -942,7 +976,7 @@
   }
   function finishRefresh(btn, updated, date) {
     _refreshing = false;
-    if (btn) { btn.disabled = false; btn.textContent = "↻ Refresh NAVs"; }
+    if (btn) { btn.disabled = false; btn.innerHTML = ic("refresh") + " Refresh NAVs"; }
     if (updated > 0) {
       if (D.dataSource) { D.dataSource.live = true; if (date) D.dataSource.asOf = isoDate(date); }
       audit("data", "Live NAV refresh from AMFI (mfapi.in): " + updated + " scheme(s) updated.");
@@ -1096,7 +1130,7 @@
     host.innerHTML = '<div class="stress-headwrap"><h3 style="margin:0;">Portfolio stress test</h3>' +
       '<p class="stress-sub">Hypothetical shocks applied to your live holdings — your real portfolio is never changed.</p></div>' +
       '<div class="stress-grid">' + cards + "</div>" + stressDetail(sel) +
-      '<p class="stress-disclaimer">⚠ Hypothetical simulations for education only — not a forecast, not investment advice. Real outcomes depend on many factors beyond a single shock.</p>';
+      '<p class="stress-disclaimer">' + ic("warning") + ' Hypothetical simulations for education only — not a forecast, not investment advice. Real outcomes depend on many factors beyond a single shock.</p>';
     Array.prototype.forEach.call(host.querySelectorAll(".stress-card"), function (b) {
       b.addEventListener("click", function () { stressScn = b.getAttribute("data-scn"); renderStressTest(); });
     });
@@ -1131,7 +1165,7 @@
       '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:12.5px;color:var(--ink-2);">' +
       "<span>" + unlocked + " product" + (unlocked === 1 ? "" : "s") + " unlocked so far</span>" +
       (next ? '<a href="#" data-lesson-link="' + next.id + '" style="color:var(--accent);">Next: ' + esc(next.title) + " (" + next.minutes + " min) →</a>"
-            : '<span style="color:var(--good);">✓ All lessons complete</span>') + "</div>";
+            : '<span style="color:var(--good);">' + ic("check") + ' All lessons complete</span>') + "</div>";
   }
   function renderGlossary() {
     var host = $("glossary-card"); if (!host) return;
@@ -1161,10 +1195,10 @@
     host.innerHTML = (D.lessons || []).map(function (l) {
       var done = state.completedLessons.indexOf(l.id) >= 0;
       return '<button class="lesson-card" data-lesson-id="' + l.id + '" style="text-align:left;cursor:pointer;">' +
-        '<div style="font-size:26px;">' + l.emoji + "</div>" +
+        '<div style="font-size:26px;">' + ic(l.icon) + "</div>" +
         '<div style="font-weight:600;margin-top:4px;">' + esc(l.title) + "</div>" +
         '<div style="font-size:11px;color:var(--ink-muted);">' + l.minutes + " min &middot; " + l.quiz.length + " questions</div>" +
-        '<div class="lesson-status" style="margin-top:6px;font-size:12px;color:' + (done ? "var(--good)" : "var(--ink-muted)") + ';">' + (done ? "✓ Completed" : "Not started") + "</div></button>";
+        '<div class="lesson-status" style="margin-top:6px;font-size:12px;color:' + (done ? "var(--good)" : "var(--ink-muted)") + ';">' + (done ? ic("check") + " Completed" : "Not started") + "</div></button>";
     }).join("");
     Array.prototype.forEach.call(host.querySelectorAll("[data-lesson-id]"), function (n) {
       n.addEventListener("click", function () { openLesson(n.getAttribute("data-lesson-id")); });
@@ -1184,7 +1218,7 @@
       }).join("");
       return '<div class="quiz-q" data-answer="' + q.answer + '" style="margin-bottom:10px;"><div style="font-weight:600;font-size:13px;margin-bottom:2px;">' + (qi + 1) + ". " + esc(q.q) + "</div>" + opts + "</div>";
     }).join("");
-    var body = '<div class="lesson-modal"><div style="font-size:28px;">' + l.emoji + '</div><h2 style="margin:2px 0 10px;">' + esc(l.title) + "</h2>" +
+    var body = '<div class="lesson-modal"><div style="font-size:28px;">' + ic(l.icon) + '</div><h2 style="margin:2px 0 10px;">' + esc(l.title) + "</h2>" +
       secHtml +
       '<hr style="border:none;border-top:1px solid var(--hairline);margin:12px 0;">' +
       '<h3 style="margin:0 0 8px;">Quick check (' + l.quiz.length + " questions)</h3>" + quizHtml +
@@ -1207,7 +1241,7 @@
     if (answered < l.quiz.length) { if (res) res.innerHTML = '<span style="color:var(--warn);">Please answer all ' + l.quiz.length + " questions.</span>"; return; }
     var passed = correct >= 2;
     if (res) res.innerHTML = passed
-      ? '<span style="color:var(--good);">✓ ' + correct + "/" + l.quiz.length + " correct — lesson complete!</span>"
+      ? '<span style="color:var(--good);">' + ic("check") + " " + correct + "/" + l.quiz.length + " correct — lesson complete!</span>"
       : '<span style="color:var(--critical);">' + correct + "/" + l.quiz.length + " correct — review and try again (need 2).</span>";
     if (passed && state.completedLessons.indexOf(l.id) < 0) {
       state.completedLessons.push(l.id); save("completedLessons");
@@ -1225,7 +1259,7 @@
     var host = $("risk-quiz");
     if (state.riskProfile) {
       // returning user: show completed state + result (with retake button)
-      if (host) host.innerHTML = '<div style="font-size:13px;color:var(--ink-2);">✓ You\'ve completed the risk quiz. Your result is on the right — retake anytime.</div>';
+      if (host) host.innerHTML = '<div style="font-size:13px;color:var(--ink-2);">' + ic("check") + ' You\'ve completed the risk quiz. Your result is on the right — retake anytime.</div>';
       renderRiskResult();
     } else {
       quizPos = 0; quizAnswers = [];
@@ -1236,7 +1270,7 @@
   function renderQuizStep() {
     var host = $("risk-quiz"); if (!host) return;
     var qz = D.riskQuiz || [];
-    if (quizPos >= qz.length) { host.innerHTML = '<div style="font-size:13px;color:var(--good);">✓ Quiz complete — see your profile.</div>'; computeRisk(); return; }
+    if (quizPos >= qz.length) { host.innerHTML = '<div style="font-size:13px;color:var(--good);">' + ic("check") + ' Quiz complete — see your profile.</div>'; computeRisk(); return; }
     var q = qz[quizPos];
     var progress = Math.round(quizPos / qz.length * 100);
     host.innerHTML = '<div class="quiz-progress-bar"><div class="quiz-progress-fill" style="width:' + progress + '%;"></div></div>' +
@@ -1329,11 +1363,11 @@
       var s = suitability(p);
       var chip = '<span class="cat-chip" style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:6px;padding:1px 7px;font-size:11px;">' + esc(p.category) + "</span>";
       var badge = p.registered
-        ? '<span class="sebi-badge" style="color:var(--good);font-size:11px;">✓ SEBI-registered</span>'
-        : '<span class="blocked-banner" style="color:var(--critical);font-weight:700;font-size:11px;">⛔ BLOCKED — UNREGISTERED</span>';
+        ? '<span class="sebi-badge" style="color:var(--good);font-size:11px;">' + ic("check") + ' SEBI-registered</span>'
+        : '<span class="blocked-banner" style="color:var(--critical);font-weight:700;font-size:11px;">' + ic("ban") + ' BLOCKED — UNREGISTERED</span>';
       var gate = s.ok
-        ? '<div class="suit-ok" style="color:var(--good);font-size:12px;margin-top:6px;">✓ ' + esc(s.reason) + "</div>"
-        : '<div class="suit-blocked" style="color:var(--serious);font-size:12px;margin-top:6px;">🔒 ' + esc(s.reason) + "</div>";
+        ? '<div class="suit-ok" style="color:var(--good);font-size:12px;margin-top:6px;">' + ic("check") + " " + esc(s.reason) + "</div>"
+        : '<div class="suit-blocked" style="color:var(--serious);font-size:12px;margin-top:6px;">' + ic("lock") + " " + esc(s.reason) + "</div>";
       return '<div class="product-card" data-product="' + p.id + '" style="cursor:pointer;">' +
         '<div style="display:flex;justify-content:space-between;align-items:start;gap:8px;"><div style="font-weight:600;">' + esc(p.name) + "</div>" + gradeBadge(p.riskGrade) + "</div>" +
         '<div style="margin:4px 0;">' + chip + " " + badge + "</div>" +
@@ -1366,11 +1400,11 @@
     var action, gateLink = null;
     if (!p.registered) {
       action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
-        '<div style="color:var(--serious);font-weight:600;">🔒 Not SEBI-registered — blocked for your protection.</div></div>';
+        '<div style="color:var(--serious);font-weight:600;">' + ic("lock") + ' Not SEBI-registered — blocked for your protection.</div></div>';
     } else if (!lessonOk) {
       gateLink = "learn";
       action = '<div class="blocked-box" style="margin-top:12px;border:1px solid var(--hairline);border-radius:8px;padding:10px;">' +
-        '<div style="color:var(--serious);font-weight:600;">🔒 Finish the “' + esc(lessonName) + '” lesson to unlock.</div>' +
+        '<div style="color:var(--serious);font-weight:600;">' + ic("lock") + ' Finish the “' + esc(lessonName) + '” lesson to unlock.</div>' +
         '<button id="invest-fix" class="btn-primary" style="margin-top:8px;">Go to lesson →</button></div>';
     } else {
       action = '<button id="invest-continue" class="btn-primary" style="width:100%;margin-top:12px;">Assess suitability &amp; invest →</button>';
@@ -1888,12 +1922,12 @@
 
   function discoverStateHTML(kind) {
     if (kind === "error") {
-      return '<div class="disc-state"><div class="disc-state-icon">⚠</div>' +
+      return '<div class="disc-state"><div class="disc-state-icon">' + ic("warning") + "</div>" +
         "<h3>Couldn't load the marketplace</h3>" +
         "<p>Instrument data is unavailable right now. Please try again.</p>" +
         '<button id="disc-retry" class="btn btn-primary" type="button">Retry</button></div>';
     }
-    return '<div class="disc-state"><div class="disc-state-icon">🔍</div>' +
+    return '<div class="disc-state"><div class="disc-state-icon">' + ic("search") + "</div>" +
       "<h3>No instruments match</h3>" +
       "<p>Try a different category, risk level or search term.</p>" +
       '<button id="disc-reset" class="btn btn-ghost" type="button">Clear filters</button></div>';
@@ -2027,7 +2061,7 @@
     "Compare REITs and InvITs",
     "Explain Gold ETFs"
   ];
-  var ADVICE_NOTE = '<div class="advice-note" style="font-size:11px;color:var(--ink-muted);margin-top:8px;border-top:1px solid var(--hairline);padding-top:6px;">ℹ Informational &amp; educational only, not investment advice (SEBI RIA boundary).</div>';
+  var ADVICE_NOTE = '<div class="advice-note" style="font-size:11px;color:var(--ink-muted);margin-top:8px;border-top:1px solid var(--hairline);padding-top:6px;">' + ic("info") + ' Informational &amp; educational only, not investment advice (SEBI RIA boundary).</div>';
 
   function renderCopilot() {
     var chips = $("chat-suggestions");
@@ -2077,7 +2111,7 @@
     var ans;
     // 9. scam check (before generic)
     if (/quickrich|agro gold|assured|guaranteed|24%/.test(q)) {
-      ans = "<b>⛔ Red flag.</b> “QuickRich Agro Gold Scheme” promises <b>24% assured returns</b> and is <b>not found in any SEBI or exchange registry</b>. Guaranteed high returns are a classic fraud marker — NiveshOS blocks it. Verified alternatives are in Discover.";
+      ans = "<b>" + ic("ban") + " Red flag.</b> “QuickRich Agro Gold Scheme” promises <b>24% assured returns</b> and is <b>not found in any SEBI or exchange registry</b>. Guaranteed high returns are a classic fraud marker — NiveshOS blocks it. Verified alternatives are in Discover.";
     } else if (/summar|overview|snapshot|tl;? ?dr|brief.*portfolio|portfolio.*brief/.test(q)) {
       var td3 = thirtyDay(), mh3 = mergedHoldings(), se3 = sectorExposure()[0], hr3 = healthReport(), al3 = assetAlloc().slice(0, 3);
       ans = "<b>Portfolio snapshot</b>" +
@@ -2403,7 +2437,7 @@
       casSteps("upload") +
       '<p class="gw-note">NiveshOS reads the statement locally in your browser — nothing is uploaded to a server. We support CAMS/KFintech and NSDL/CDSL formats; unrecognised rows are flagged for you to fix before anything merges.</p>' +
       '<div class="cas-drop" id="cas-drop">' +
-        '<div class="cas-drop-icon" aria-hidden="true">📄</div>' +
+        '<div class="cas-drop-icon" aria-hidden="true">' + ic("file") + "</div>" +
         '<div class="cas-drop-main">Choose your CAS PDF</div>' +
         '<div class="cas-drop-sub">PDF, or a plain-text / CSV export</div>' +
         '<input id="cas-file" type="file" accept="application/pdf,.pdf,.txt,.csv,text/plain" hidden>' +
@@ -2629,7 +2663,7 @@
         '<b class="num">' + fmt(hv(h)) + "</b></div>";
     }).join("") : '<p style="color:var(--ink-muted);font-size:13px;">No new holdings were added.</p>';
     var body = '<div class="cas-modal"><div class="gw-modal-head"><h2 style="margin:0;">Import complete</h2>' +
-      '<span class="badge badge-good">✓ Merged</span></div>' +
+      '<span class="badge badge-good">' + ic("check") + ' Merged</span></div>' +
       casSteps("done") +
       casSummaryStrip(plan) +
       '<div class="cas-added-list">' + addedRows + "</div>" +
@@ -2662,12 +2696,12 @@
      tracks the real book. Inputs are stored in state.goals; everything else is
      derived on render so the plan always reflects current prices.             */
   var GOAL_TYPES = [
-    { type: "retirement", label: "Retirement",      emoji: "🏖️", defTarget: 20000000, defYears: 25 },
-    { type: "emergency",  label: "Emergency Fund",   emoji: "🛟", defTarget: 300000,   defYears: 1 },
-    { type: "education",  label: "Child Education",  emoji: "🎓", defTarget: 4000000,  defYears: 15 },
-    { type: "home",       label: "Home Purchase",    emoji: "🏠", defTarget: 8000000,  defYears: 7 },
-    { type: "vacation",   label: "Vacation",         emoji: "🏝️", defTarget: 400000,   defYears: 2 },
-    { type: "vehicle",    label: "Vehicle",          emoji: "🚗", defTarget: 1200000,  defYears: 3 }
+    { type: "retirement", label: "Retirement",      icon: "palm",     defTarget: 20000000, defYears: 25 },
+    { type: "emergency",  label: "Emergency Fund",   icon: "lifebuoy", defTarget: 300000,   defYears: 1 },
+    { type: "education",  label: "Child Education",  icon: "grad",     defTarget: 4000000,  defYears: 15 },
+    { type: "home",       label: "Home Purchase",    icon: "home",     defTarget: 8000000,  defYears: 7 },
+    { type: "vacation",   label: "Vacation",         icon: "umbrella", defTarget: 400000,   defYears: 2 },
+    { type: "vehicle",    label: "Vehicle",          icon: "car",      defTarget: 1200000,  defYears: 3 }
   ];
   var GOAL_ALLOC_ORDER = ["Equity", "Debt", "Gold", "Cash"];
   var GOAL_RET = { Equity: 11, Debt: 7, Gold: 7.5, Cash: 4 };   // assumed annual %, shown to the user
@@ -2763,7 +2797,7 @@
     var host = $("goals-grid"); if (!host) return;
     var goals = state.goals || [];
     if (!goals.length) {
-      host.innerHTML = '<div class="goals-empty"><div class="goals-empty-icon">🎯</div>' +
+      host.innerHTML = '<div class="goals-empty"><div class="goals-empty-icon">' + ic("target") + "</div>" +
         '<h3>Plan your first goal</h3><p>Turn “₹ someday” into a monthly number. Pick a goal and NiveshOS shows the target corpus, the SIP to get there and a suggested mix.</p>' +
         '<button id="goals-empty-add" class="btn btn-primary" type="button">+ Add a goal</button></div>';
       var ea = $("goals-empty-add"); if (ea) ea.addEventListener("click", function () { openGoalForm(null); });
@@ -2799,9 +2833,9 @@
     var m = goalMeta(g.type), c = goalCompute(g), st = goalStatus(c.progress), col = statusColor(st.status);
     return '<div class="goal-card" data-goal="' + esc(g.id) + '" tabindex="0" role="button">' +
       '<div class="goal-card-actions">' +
-        '<button class="goal-edit" type="button" aria-label="Edit goal" title="Edit">✎</button>' +
-        '<button class="goal-del" type="button" aria-label="Delete goal" title="Delete">🗑</button></div>' +
-      '<div class="goal-card-head"><span class="goal-emoji" aria-hidden="true">' + m.emoji + '</span>' +
+        '<button class="goal-edit" type="button" aria-label="Edit goal" title="Edit">' + ic("pencil") + "</button>" +
+        '<button class="goal-del" type="button" aria-label="Delete goal" title="Delete">' + ic("trash") + "</button></div>" +
+      '<div class="goal-card-head"><span class="goal-emoji" aria-hidden="true">' + ic(m.icon) + "</span>" +
         '<div class="goal-card-title"><div class="goal-name">' + esc(g.name) + '</div>' +
         '<div class="goal-sub">' + fmt(c.targetCorpus) + ' · ' + (c.years > 0 ? c.years + ' yr' + (c.years === 1 ? '' : 's') + ' left' : 'due now') + '</div></div>' +
         '<span class="badge badge-' + st.status + '">' + st.label + '</span></div>' +
@@ -2830,7 +2864,7 @@
     var rows = goals.slice(0, 3).map(function (g) {
       var m = goalMeta(g.type), c = goalCompute(g), st = goalStatus(c.progress), col = statusColor(st.status);
       return '<div class="goals-dash-row" data-goal="' + esc(g.id) + '">' +
-        '<span class="goals-dash-emoji" aria-hidden="true">' + m.emoji + '</span>' +
+        '<span class="goals-dash-emoji" aria-hidden="true">' + ic(m.icon) + "</span>" +
         '<span class="goals-dash-name">' + esc(g.name) + '</span>' +
         '<span class="goals-dash-track"><span style="width:' + c.progress.toFixed(0) + '%;background:' + col + ';"></span></span>' +
         '<span class="goals-dash-pct">' + Math.round(c.progress) + '%</span></div>';
@@ -2863,7 +2897,7 @@
         '<span class="alloc-track"><span style="width:' + c.alloc[k] + '%;background:' + sv(idx) + ';"></span></span>' +
         '<span class="alloc-pct">' + c.alloc[k] + '%</span></div>';
     }).join("");
-    var body = '<div class="goal-detail"><div class="gw-modal-head"><h2 style="margin:0;">' + m.emoji + ' ' + esc(g.name) + '</h2>' +
+    var body = '<div class="goal-detail"><div class="gw-modal-head"><h2 style="margin:0;">' + ic(m.icon) + " " + esc(g.name) + "</h2>" +
       '<span class="badge badge-' + st.status + '">' + st.label + '</span></div>' +
       '<div class="goal-detail-top">' + goalRing(c.progress, col, 116) +
         '<div class="goal-detail-kpis">' +
@@ -2942,7 +2976,7 @@
   function goalFormBody(d, editing, id) {
     var typeChips = GOAL_TYPES.map(function (t) {
       return '<button type="button" class="goal-type-chip' + (d.type === t.type ? " active" : "") + '" data-type="' + t.type + '">' +
-        '<span aria-hidden="true">' + t.emoji + '</span>' + esc(t.label) + '</button>';
+        '<span aria-hidden="true">' + ic(t.icon) + "</span>" + esc(t.label) + "</button>";
     }).join("");
     var meta = goalMeta(d.type);
     var name = d.name || (editing ? "" : meta.label);
@@ -3163,7 +3197,7 @@
         if (r) {
           r.classList.remove("loading"); r.classList.add("done");
           var st = r.querySelector(".fetch-status, .status, .fetch-state");
-          if (st) st.textContent = "✓ synced";
+          if (st) st.innerHTML = ic("check") + " synced";
         }
         i++;
       } else {

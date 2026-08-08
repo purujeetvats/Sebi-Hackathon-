@@ -1238,6 +1238,9 @@ svg .anim-bar, svg .anim-line, svg .anim-donut { transform-box: fill-box; transf
 .alert-serious .alert-icon, .notif-item-icon.alert-serious { background: color-mix(in srgb, var(--serious) 18%, transparent); color: var(--serious); }
 .alert-warn .alert-icon, .notif-item-icon.alert-warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .alert-info .alert-icon, .notif-item-icon.alert-info { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.alert-svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ic { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.14em; display: inline-block; flex: none; }
+.notif-item-icon .alert-svg { width: 15px; height: 15px; }
 .alert-body { min-width: 0; }
 .alert-title-row { display: flex; align-items: center; gap: 8px; }
 .alert-title { font-weight: 600; font-size: 13px; }
