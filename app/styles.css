@@ -1317,10 +1317,12 @@ body.notif-open .notif-panel { transform: translateX(0); }
   --profit-strong: #0f7a3d;
 }
 
-/* scale everything up to a comfortable reading size in one lever
-   (sizes across the app are hard-coded px, so zoom is the clean uniform bump) */
-html { zoom: 1.15; }
-@media (max-width: 900px) { html { zoom: 1; } }
+/* NOTE: CSS `zoom` was tried here for a uniform scale-up but it breaks click
+   hit-testing on position:fixed elements (the sidebar nav + overlays), so all
+   buttons went dead. Bump readability via font sizes instead — click-safe. */
+body { font-size: 16px; }
+h1 { font-size: 30px; }
+.stat-tile .value, #kpi-row .value { font-size: 34px; }
 
 /* accessible focus ring, one system across every control */
 .btn:focus-visible,
