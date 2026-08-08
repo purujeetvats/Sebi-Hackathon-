@@ -8,3 +8,11 @@ tools/build-pptx.py
 # knowledge graph — local tooling output, never committed
 graphify-out/
 .gstack/
+
+node_modules/
+.next/
+next-env.d.ts
+
+node_modules/
+.next/
+next-env.d.ts
