@@ -184,7 +184,7 @@ table { border-collapse: collapse; width: 100%; }
 
 .panel-header { margin-bottom: 22px; }
 .panel-header:has(.panel-icon) { display: grid; grid-template-columns: auto 1fr; column-gap: 14px; align-items: center; }
-.panel-icon { width: 44px; height: 44px; grid-column: 1; grid-row: 1 / span 2; object-fit: contain; }
+.panel-icon { width: 96px; height: 96px; grid-column: 1; grid-row: 1 / span 2; object-fit: contain; }
 .panel-header h1 { font-size: clamp(1.5rem, 1.3rem + 0.6vw, 1.9rem); font-weight: 700; letter-spacing: -0.01em; }
 .panel-sub { color: var(--ink-muted); font-size: 13.5px; margin-top: 4px; }
 
@@ -1319,10 +1319,11 @@ body.notif-open .notif-panel { transform: translateX(0); }
   --profit-strong: #0f7a3d;
 }
 
-/* NOTE: CSS `zoom` was tried here for a uniform scale-up but it breaks click
-   hit-testing on position:fixed elements (the sidebar nav + overlays), so all
-   buttons went dead. Bump readability via font sizes instead — click-safe. */
-body { font-size: 16px; }
+/* Uniform scale-up. Modern Chromium (128+, 2024) reimplemented `zoom` with
+   correct hit-testing for position:fixed elements, so the earlier dead-button
+   bug no longer applies. If buttons ever go dead again, drop back to per-
+   element font bumps. */
+body { zoom: 1.1; font-size: 16px; }
 h1 { font-size: 30px; }
 .stat-tile .value, #kpi-row .value { font-size: 34px; }
 
