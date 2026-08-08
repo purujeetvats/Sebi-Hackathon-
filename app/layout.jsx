@@ -14,7 +14,14 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* dotLottie web component (onboarding welcome animation) */}
+        <script
+          type="module"
+          src="https://unpkg.com/@lottiefiles/dotlottie-wc@0.9.4/dist/dotlottie-wc.js"
+        />
+      </body>
     </html>
   );
 }
